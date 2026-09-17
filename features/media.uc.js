@@ -170,6 +170,8 @@
         _scheduleProgress(items, paint) {
             this._progressItems = items;
             if (this._progressTimer) return;
+            // Big libraries: repaint less often while the walk is still growing.
+            const ms = items.length > 2000 ? 1000 : ZenLibraryMedia.PROGRESS_MS;
             this._progressTimer = setTimeout(() => {
                 this._progressTimer = 0;
                 const pending = this._progressItems;
@@ -587,7 +589,23 @@
             loading.appendChild(this.el("p", { textContent: "Looking for your downloaded images and videos." }));
 
             container.appendChild(loading);
-            startLoading();
+            // Lazy: Places and disk stay untouched until the browser is idle (or
+            // 800ms), and only if this tab is still showing — mount returns in
+            // milliseconds no matter how big the library is.
+            const begin = () => {
+                if (token !== this._renderToken || !container.isConnected ||
+                    this.library?.activeTab !== "media") return;
+                startLoading();
+            };
+            try {
+                if (typeof window.requestIdleCallback === "function") {
+                    window.requestIdleCallback(begin, { timeout: 800 });
+                } else {
+                    window.setTimeout(begin, 150);
+                }
+            } catch (e) {
+                window.setTimeout(begin, 150);
+            }
 
             return wrapper;
         }
@@ -868,7 +886,16 @@
 
             try {
                 const list = await this._historyList();
-                const rows = (await list.getAll()).filter(d => this._rootFor(d?.target?.path)).sort((a, b) => when(b) - when(a));
+                const all = await list.getAll();
+                // Chunked with yields: full download histories run to tens of
+                // thousands of rows, and filtering them in one go blocks chrome.
+                const matches = [];
+                for (let i = 0; i < all.length; i++) {
+                    const d = all[i];
+                    if (d?.target?.path && this._rootFor(d.target.path)) matches.push(d);
+                    if ((i & 127) === 0 && i > 0) await new Promise(r => window.setTimeout(r, 0));
+                }
+                const rows = matches.sort((a, b) => when(b) - when(a));
 
                 // Re-downloads of one path are one file; dedupe before taking the limit so they do not eat into it.
                 const seen = new Set();
