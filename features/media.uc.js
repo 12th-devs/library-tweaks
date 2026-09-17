@@ -1,0 +1,2320 @@
+// Library Tweaks — Media section for the native Zen Library.
+//
+// Ported from the Zen Library mod's Media section (features/Media.uc.js).
+// Scanning, masonry grid, previews, audio playback, drag & drop and the context
+// menu are identical; the custom-library couplings are adapted:
+//  - masonry columns follow the grid's own width (native panel is fixed-width,
+//    so the custom width-sync protocol is gone);
+//  - ZenLibraryUtil is optional (debounce, card-remove and format fallbacks).
+
+"use strict";
+
+(function () {
+    // Window-capture types armed for the duration of a media-card drag, listed once so arm and
+    // disarm cannot drift apart and leave a listener behind.
+    const DRAG_CANCEL_EVENTS = ["drag", "dragover", "drop", "contextmenu", "pointerdown"];
+    // How long a cancelled drag keeps vetoing drops, and how long the platform context menu
+    // stays suppressed after that cancel. Both bound the blast radius if dragend never arrives.
+    const DRAG_CANCEL_GRACE_MS = 500;
+
+    class ZenLibraryMedia {
+        // [audit] PERF-1 — hoisted to statics. These three lists were declared as locals in
+        // both fetchDownloads() and renderList(), which meant six array literals rebuilt on
+        // every render and two copies that could drift apart.
+        static IMAGE_EXTS = ["jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "ico", "bmp", "tiff", "tif", "heic", "heif"];
+        static VIDEO_EXTS = ["mp4", "webm", "mkv", "avi", "mov", "m4v", "3gp", "mpg", "mpeg", "flv", "ts", "ogv", "wmv"];
+        static AUDIO_EXTS = ["mp3", "wav", "ogg", "m4a", "aac", "flac", "opus", "m4b", "m4p", "wma", "alac", "amr", "aiff", "aif", "caf", "oga", "spx", "mid", "midi"];
+        static INITIAL_RENDER_LIMIT = 36;
+        static RENDER_BATCH_SIZE = 36;
+        // Directories below the Downloads root the walk descends into; the history seed honours the same cap.
+        static SCAN_DEPTH = 3;
+        static SCAN_BATCH_SIZE = 64;
+        // Audio cover reads in flight at once: each is a 2 MB IOUtils.read plus a parse.
+        static COVER_CONCURRENCY = 2;
+        // Newest download-history rows checked for the first paint; see fetchRecentHistoryMedia().
+        static HISTORY_SEED_LIMIT = 96;
+        // Mid-scan repaints are held to this interval, and only land when they change the visible cards.
+        static PROGRESS_MS = 250;
+        // Unseen images sized before placement (about a screenful), and how long a paint waits for them.
+        static EAGER_PREVIEWS = 18;
+        static MEASURE_TIMEOUT_MS = 200;
+        // While the tab is showing, directory mtimes are re-checked this often so a file deleted or added outside the browser follows on screen.
+        static WATCH_MS = 4000;
+        // The location chips, in panel order; each id is a scan root's id (see _scanRoots).
+        static LOCATIONS = [["easel", "Easel captures"], ["downloads", "Downloads"], ["screenshots", "Screenshots"], ["user", "User"]];
+        // Semicolon-separated absolute folder paths the user adds in Settings; each is walked like Downloads.
+        static USER_DIRS_PREF = "zen.library.media.user-dirs";
+        static EASEL_STORE_URL = "chrome://sine/content/zen-easel/background/store.sys.mjs";
+        // Zen/Firefox, Windows and macOS all name their captures "Screenshot <date>…"/"Screen Shot …", wherever they save them.
+        static SCREENSHOT_NAME = /^screen ?shot[ _-]/i;
+
+        constructor(library) {
+            this.library = library;
+            this._container = null;
+            this._searchTerm = "";
+            this._filter = "all"; // all, images, videos, audio
+            this._locations = new Set(); // selected location ids; empty means every location
+            this._filtersOpen = false;
+            this._searchDebounce = null;
+            this._headerEls = null;
+            this._chipEls = [];
+            this._panelObserver = null;
+            // The roots the last walk started from; refreshed per scan so a settings change lands on the next one.
+            this._roots = null;
+            this._itemCount = 0;
+            this._currentAudio = null;
+            this._playingId = null;
+            this._coverCache = new Map();
+            this._pendingCovers = new Set();
+            this._coverListeners = new Map();
+            this._coverQueue = [];
+            this._activeCoverJobs = 0;
+            this._fileCache = new Map(); // Cache for Gecko File objects
+            this._aspectCache = new Map(); // item id → "w / h" of its preview, so a card is its final height before the file loads
+
+            // [audit] PERF-1 — the scan cache. See fetchDownloads().
+            this._scanCache = null;
+            this._scanPromise = null;
+            // Path key → { path, mtime } of every directory the last walk visited; a changed mtime means a child was added, removed or renamed.
+            this._dirMtimes = new Map();
+            this._downloadsList = null;
+            this._downloadsView = null;
+            this._watchTimer = 0;
+            this._revalidating = false;
+            this._progressItems = null;
+            this._progressTimer = 0;
+            // What renderList() last painted: the list it drew from, and the ids of the cards on screen.
+            this._listSource = null;
+            this._renderedIds = null;
+            this._renderToken = 0;
+            this._visibleLimit = ZenLibraryMedia.INITIAL_RENDER_LIMIT;
+            this._previewObserver = null;
+            this._moreObserver = null;
+
+            // [audit] LEAK-1 — every blob: URL this module hands out is recorded here so
+            // destroy() can revoke it. Previously nothing was ever revoked and there was no
+            // destroy() at all, so cover art accumulated for the lifetime of the window.
+            this._objectUrls = new Set();
+
+            this._dragCancelArmed = false;
+            this._dragWasCancelled = false;
+            this._dragCancelledAt = 0;
+            this._onDragCancelEvent = this._onDragCancelEvent.bind(this);
+            this._onSuppressContextMenu = this._onSuppressContextMenu.bind(this);
+            this._contextMenuSuppressArmed = false;
+            this._contextMenuSuppressTimer = null;
+            this._suppressContextMenuUntil = 0;
+            this._suppressBrowser = null;
+            this._destroyed = false;
+        }
+
+        // [audit] LEAK-1 — one place that mints blob URLs, so one place has to remember them.
+        _objectUrl(blob) {
+            const url = URL.createObjectURL(blob);
+            this._objectUrls.add(url);
+            return url;
+        }
+
+        // Cover extraction is queued rather than fired per card, so a grid of audio files does not start 36 reads at once; a re-render of a card in flight just adds its callback.
+        _queueCover(item, onCover) {
+            if (!item?.file || this._coverCache.has(item.id)) return;
+
+            const listeners = this._coverListeners.get(item.id) || [];
+            listeners.push(onCover);
+            this._coverListeners.set(item.id, listeners);
+            if (this._pendingCovers.has(item.id)) return;
+
+            this._pendingCovers.add(item.id);
+            this._coverQueue.push(item);
+            this._drainCoverQueue();
+        }
+
+        _drainCoverQueue() {
+            while (this._activeCoverJobs < ZenLibraryMedia.COVER_CONCURRENCY && this._coverQueue.length) {
+                const item = this._coverQueue.shift();
+                this._activeCoverJobs++;
+                this._extractCover(item.file)
+                    .then(coverUrl => {
+                        // A result landing after destroy() would re-mint a URL nothing will revoke.
+                        if (this._destroyed) {
+                            if (coverUrl) {
+                                try { URL.revokeObjectURL(coverUrl); } catch (e) { }
+                                this._objectUrls.delete(coverUrl);
+                            }
+                            return;
+                        }
+                        this._coverCache.set(item.id, coverUrl || null);
+                        if (!coverUrl) return;
+                        for (const onCover of this._coverListeners.get(item.id) || []) onCover(coverUrl);
+                    })
+                    .catch(() => {
+                        this._coverCache.set(item.id, null);
+                    })
+                    .finally(() => {
+                        this._pendingCovers.delete(item.id);
+                        this._coverListeners.delete(item.id);
+                        this._activeCoverJobs--;
+                        this._drainCoverQueue();
+                    });
+            }
+        }
+
+        // Drops queued jobs and every callback; jobs already reading finish and fill the cache.
+        _clearCoverJobs() {
+            for (const item of this._coverQueue) this._pendingCovers.delete(item.id);
+            this._coverQueue.length = 0;
+            this._coverListeners.clear();
+        }
+
+        // Scan progress arrives per directory batch; paint at most every PROGRESS_MS, from a sorted snapshot.
+        _scheduleProgress(items, paint) {
+            this._progressItems = items;
+            if (this._progressTimer) return;
+            this._progressTimer = setTimeout(() => {
+                this._progressTimer = 0;
+                const pending = this._progressItems;
+                this._progressItems = null;
+                if (pending) paint(this._sorted(pending));
+            }, ZenLibraryMedia.PROGRESS_MS);
+        }
+
+        _cancelProgress() {
+            clearTimeout(this._progressTimer);
+            this._progressTimer = 0;
+            this._progressItems = null;
+        }
+
+        // Brings the grid up to date with `items` without rebuilding it: cards already on screen stay (a rebuild reloads every preview and resets scroll), new ones are built and slid in, moved ones glide.
+        _renderIfChanged(items) {
+            const filtered = this._filterItems(items);
+            const limit = this._visibleLimit || ZenLibraryMedia.INITIAL_RENDER_LIMIT;
+            const target = filtered.slice(0, limit);
+            const shown = this._renderedIds;
+            const same = shown && target.length === shown.length && target.every((item, i) => item.id === shown[i]);
+            this._setCount(items.length);
+            if (!same && !this._patchGrid(target)) {
+                const prevScroll = this._container?.scrollTop || 0;
+                this.renderList(items);
+                if (this._container) this._container.scrollTop = prevScroll;
+                return;
+            }
+            this._listSource = items;
+            this._renderedIds = target.map(item => item.id);
+            if (filtered.length > limit) {
+                this._ensureLoadMore();
+            } else {
+                this._moreObserver?.disconnect();
+                this._moreObserver = null;
+                this._container?.querySelector(".media-load-more-sentinel")?.remove();
+            }
+        }
+
+        // Puts the cards on screen into `target` order in place; false when there is no grid to patch or the column count changed.
+        _patchGrid(target) {
+            const wrapper = this._container?.querySelector(".media-masonry-wrapper");
+            const columns = wrapper ? [...wrapper.querySelectorAll(":scope > .media-masonry-column")] : [];
+            if (!target.length || columns.length !== this._columnCount()) return false;
+
+            const cards = new Map([...wrapper.querySelectorAll(".media-card")].map(card => [card.dataset.id, card]));
+            const before = new Map([...cards].map(([id, card]) => [id, card.getBoundingClientRect()]));
+            const keep = new Set(target.map(item => item.id));
+            for (const [id, card] of cards) {
+                if (keep.has(id)) continue;
+                if (id === this._playingId) this._stopCurrentAudio();
+                for (const media of card.querySelectorAll("[data-src]")) this._previewObserver?.unobserve(media);
+                card.remove();
+            }
+
+            // Round-robin slot for index i is column i % n, row i / n; earlier slots are already right, so the occupant of this one is the insertion point.
+            target.forEach((item, index) => {
+                let card = cards.get(item.id);
+                if (!card) {
+                    card = this._createCard(item);
+                    card.classList.add("pop-in");
+                    card.addEventListener("animationend", () => card.classList.remove("pop-in"), { once: true });
+                }
+                const column = columns[index % columns.length];
+                const slot = column.children[Math.floor(index / columns.length)] || null;
+                if (slot === card) return;
+                // moveBefore keeps a <video>'s decoder and a playing card's state; insertBefore is the fallback for new cards and older builds.
+                const canMove = card.isConnected && typeof column.moveBefore === "function";
+                try {
+                    canMove ? column.moveBefore(card, slot) : column.insertBefore(card, slot);
+                } catch (e) {
+                    column.insertBefore(card, slot);
+                }
+            });
+
+            for (const [id, card] of cards) {
+                const from = before.get(id);
+                if (!card.isConnected || !from) continue;
+                const to = card.getBoundingClientRect();
+                const dx = from.left - to.left;
+                const dy = from.top - to.top;
+                if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 220, easing: "ease-out" });
+            }
+            return true;
+        }
+
+        // Native panel content is ~300px wide: two masonry columns fit, one when
+        // narrow. Unknown width (pre-layout) assumes two.
+        _columnCount() {
+            try {
+                const width = this._container?.clientWidth || 0;
+                if (width > 0) return width >= 240 ? 2 : 1;
+            } catch (e) { }
+            return 2;
+        }
+
+        _setCount(count) {
+            this._itemCount = count;
+        }
+
+        _sorted(items) {
+            return items.slice().sort((a, b) => b.timestamp - a.timestamp);
+        }
+
+        async copyFile(item) {
+            try {
+                if (!item.file || !item.file.exists()) return;
+
+                const transferable = Cc["@mozilla.org/widget/transferable;1"].createInstance(Ci.nsITransferable);
+                transferable.init(null);
+
+                // Add the file flavor
+                transferable.addDataFlavor("application/x-moz-file");
+                transferable.setTransferData("application/x-moz-file", item.file);
+
+                // Also add as URL and text for compatibility
+                transferable.addDataFlavor("text/x-moz-url");
+                const urlString = item.url + "\n" + item.filename;
+                const urlData = Cc["@mozilla.org/supports-string;1"].createInstance(Ci.nsISupportsString);
+                urlData.data = urlString;
+                transferable.setTransferData("text/x-moz-url", urlData);
+
+                const clipboard = Cc["@mozilla.org/widget/clipboard;1"].getService(Ci.nsIClipboard);
+                clipboard.setData(transferable, null, Ci.nsIClipboard.kGlobalClipboard);
+            } catch (err) {
+                console.error("[MEDIA] Failed to copy file:", err);
+            }
+        }
+
+        get el() { return this.library.el.bind(this.library); }
+
+        // Built once per section render: the search row swaps into a History-style
+        // filter panel, and both media type and location filters live there.
+        renderHeaderControls() {
+            const top = this.el("div", { className: "zen-library-search-top" });
+
+            const searchInput = this.el("input", {
+                type: "search",
+                placeholder: "Search Media…",
+                value: this._searchTerm,
+                oninput: (event) => this._onSearchInput(event)
+            });
+
+            const searchHeader = this.el("div", { className: "zen-library-search-header" }, [
+                this.el("div", { className: "zen-library-search-box" }, [
+                    this.el("img", {
+                        src: "chrome://browser/skin/zen-icons/search-glass.svg",
+                        alt: ""
+                    }),
+                    searchInput
+                ]),
+                this.el("button", {
+                    className: "zen-library-filter-button",
+                    onclick: (event) => {
+                        event.preventDefault();
+                        this._setFiltersOpen(true);
+                    }
+                }, [
+                    this.el("img", {
+                        src: "chrome://browser/skin/zen-icons/sliders.svg",
+                        alt: ""
+                    }),
+                    this.el("span", { textContent: "Filter" })
+                ])
+            ]);
+
+            const filterHeader = this.el("div", { className: "zen-library-filter-header" }, [
+                this.el("h2", { textContent: "Filter Media…" }),
+                this.el("button", {
+                    className: "zen-library-filter-done",
+                    textContent: "Done",
+                    onclick: (event) => {
+                        event.preventDefault();
+                        this._setFiltersOpen(false);
+                    }
+                })
+            ]);
+
+            this._chipEls = [];
+            const panelInner = this.el("div", { className: "zen-library-filter-panel-inner" }, [
+                this._renderFilterGroup("type", "What type of media?", [
+                    ["all", "All"],
+                    ["images", "Images"],
+                    ["videos", "Videos"],
+                    ["audio", "Audio"]
+                ]),
+                this.el("div", { className: "zen-library-filter-group" }, [
+                    this.el("h3", { textContent: "Where is it from?" }),
+                    this.el("div", { className: "zen-library-filter-options" },
+                        ZenLibraryMedia.LOCATIONS.map(([id, label]) => this._renderLocationChip(id, label))
+                    )
+                ]),
+                this.el("div", { className: "zen-library-filter-divider" })
+            ]);
+
+            top.appendChild(searchHeader);
+            top.appendChild(filterHeader);
+            top.appendChild(this.el("div", { className: "zen-library-filter-panel" }, [panelInner]));
+
+            this._headerEls = { top, searchHeader, filterHeader, panelInner };
+            this._syncChips();
+            this._applyFiltersOpen();
+
+            const fragment = document.createDocumentFragment();
+            fragment.appendChild(top);
+            return fragment;
+        }
+
+        _renderFilterGroup(group, title, options) {
+            return this.el("div", { className: "zen-library-filter-group" }, [
+                this.el("h3", { textContent: title }),
+                this.el("div", { className: "zen-library-filter-options" },
+                    options.map(([id, label]) => this._renderFilterChip(group, id, label))
+                )
+            ]);
+        }
+
+        _renderFilterChip(group, id, label) {
+            const chip = this.el("button", {
+                className: "zen-library-filter-chip",
+                onclick: (event) => {
+                    event.preventDefault();
+                    if (group === "type") {
+                        if (this._filter === id) return;
+                        this._filter = id;
+                    }
+                    this._syncChips();
+                    this._applyFilters();
+                }
+            }, [this.el("span", { textContent: label })]);
+            this._chipEls.push({ chip, group, id });
+            return chip;
+        }
+
+        _renderLocationChip(id, label) {
+            const chip = this.el("button", {
+                className: "zen-library-filter-chip",
+                onclick: (event) => {
+                    event.preventDefault();
+                    this._toggleLocation(id);
+                }
+            }, [this.el("span", { textContent: label })]);
+            this._chipEls.push({ chip, group: "location", id });
+            return chip;
+        }
+
+        _syncChips() {
+            for (const { chip, group, id } of this._chipEls) {
+                chip.toggleAttribute("active", group === "type" ? this._filter === id : this._locations.has(id));
+            }
+        }
+
+        _toggleLocation(id) {
+            if (this._locations.has(id)) this._locations.delete(id);
+            else this._locations.add(id);
+            this._syncChips();
+            this._applyFilters();
+        }
+
+        _setFiltersOpen(open) {
+            this._filtersOpen = open;
+            this._applyFiltersOpen();
+        }
+
+        _applyFiltersOpen() {
+            const els = this._headerEls;
+            if (!els) return;
+            const open = this._filtersOpen;
+            els.top.toggleAttribute("open", open);
+            els.searchHeader.toggleAttribute("inert", open);
+            els.filterHeader.toggleAttribute("inert", !open);
+            els.panelInner.toggleAttribute("inert", !open);
+            // The shifted grid and pill bar read the var from the host. Unlike History's, this panel's width follows the card count, so the chips can wrap after opening: the height is observed, not measured once.
+            const host = this.library;
+            this._panelObserver?.disconnect();
+            this._panelObserver = null;
+            if (!open) {
+                host.style?.setProperty("--zen-library-filter-height", "0px");
+                return;
+            }
+            this._panelObserver = new ResizeObserver(() => {
+                if (this._headerEls !== els || !this._filtersOpen) return;
+                host.style?.setProperty("--zen-library-filter-height", `${els.panelInner.scrollHeight + 8}px`);
+            });
+            this._panelObserver.observe(els.panelInner);
+        }
+
+        // Leaving the tab collapses the panel, so returning never lands on a stale open state.
+        resetControls() {
+            this._setFiltersOpen(false);
+        }
+
+        // The term is stored on every keystroke so the field never lags; only the re-render waits.
+        _onSearchInput(event) {
+            this._searchTerm = event.target.value;
+            if (!this._searchDebounce) {
+                const debounce = window.ZenLibraryUtil?.debounce ||
+                    ((fn, ms) => this._debounceFn(fn, ms));
+                this._searchDebounce = debounce(() => this._applyFilters(), 300);
+            }
+            this._searchDebounce();
+        }
+
+        // Trailing-edge debounce fallback for when the custom library mod (and its
+        // ZenLibraryUtil) is not loaded. Same re-arming semantics.
+        _debounceFn(fn, ms) {
+            let timer = null;
+            const wrapped = (...args) => {
+                if (timer) window.clearTimeout(timer);
+                timer = window.setTimeout(() => {
+                    timer = null;
+                    fn(...args);
+                }, ms);
+            };
+            wrapped.cancel = () => {
+                if (timer) window.clearTimeout(timer);
+                timer = null;
+            };
+            return wrapped;
+        }
+
+        // Delete animation with a local fade fallback; always async like the util.
+        async _animateCardRemove(card, siblings) {
+            try {
+                if (window.ZenLibraryUtil?.animateCardRemove) {
+                    await window.ZenLibraryUtil.animateCardRemove(card, { siblings });
+                    return;
+                }
+            } catch (e) { }
+            try {
+                card.style.transition = "opacity 150ms ease, transform 150ms ease";
+                card.style.opacity = "0";
+                card.style.transform = "scale(0.96)";
+                await new Promise(resolve => window.setTimeout(resolve, 160));
+            } catch (e) { }
+            try { card.remove(); } catch (e) { }
+        }
+
+        // Search, location and type are pure filters over the last list: no entrance fade, and paging starts over. Mid-scan the seeded list is what is on screen and the walk's own paint applies the filters when it lands; before any paint there is nothing to filter yet.
+        _applyFilters() {
+            this._stopCurrentAudio();
+            this._visibleLimit = ZenLibraryMedia.INITIAL_RENDER_LIMIT;
+            const list = this._scanCache || this._listSource;
+            if (list) this.renderList(list);
+        }
+
+        render() {
+            // Main wrapper
+            const wrapper = this.el("div", {
+                className: "library-list-wrapper"
+            });
+
+            const container = this.el("div", { className: "media-grid" });
+            wrapper.appendChild(container);
+            this._container = container;
+            const token = ++this._renderToken;
+            // Modules outlive a close/open cycle, so a limit paged up in a previous
+            // session would otherwise render every card the user ever scrolled to.
+            this._visibleLimit = ZenLibraryMedia.INITIAL_RENDER_LIMIT;
+            // A new grid has nothing on screen yet, whatever the previous one showed.
+            this._renderedIds = null;
+            this._listSource = null;
+            this._cancelProgress();
+            this._watchDirs(token, container);
+
+            const startLoading = () => {
+                // Paints can overlap while their previews measure; only the newest may land, or an older, shorter list would remove cards.
+                let paintSeq = 0;
+                const paint = async (items) => {
+                    const seq = ++paintSeq;
+                    if (!this._canRender(token, container)) return;
+                    await this._measurePreviews(items);
+                    if (seq !== paintSeq || !this._canRender(token, container)) return;
+                    this._renderIfChanged(items);
+                    this.library.enterContent(container);
+                    container.classList.add("scrollbar-visible");
+                };
+                // The newest files come from download history well before the folder walk ends; the walk then fills in the rest behind them.
+                const seedPromise = this.fetchRecentHistoryMedia();
+                seedPromise.then(items => { if (items.length) paint(items); });
+                this.fetchDownloads({
+                    seedPromise,
+                    onProgress: (items) => this._scheduleProgress(items, paint)
+                }).then(downloads => {
+                    this._cancelProgress();
+                    paint(downloads);
+                });
+            };
+
+            // The last scan is what goes on screen; anything that changed on disk since is patched in behind it.
+            if (this._scanCache) {
+                this.renderList(this._scanCache);
+                this.library.enterContent(container);
+                container.classList.add("scrollbar-visible");
+                this._revalidate(token, container);
+                return wrapper;
+            }
+
+            const loading = this.el("div", { className: "empty-state" });
+            this.library.enterContent(loading);
+
+            // Use correct Media Icon SVG (Film Strip)
+            const iconSvg = `<svg class="empty-icon media-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 3L8 8M16 3L15 8M22 8H2M6.8 21H17.2C18.8802 21 19.7202 21 20.362 20.673C20.9265 20.3854 21.3854 19.9265 21.673 19.362C22 18.7202 22 17.8802 22 16.2V7.8C22 6.11984 22 5.27976 21.673 4.63803C21.3854 4.07354 20.9265 3.6146 20.362 3.32698C19.7202 3 18.8802 3 17.2 3H6.8C5.11984 3 4.27976 3 3.63803 3.32698C3.07354 3.6146 2.6146 4.07354 2.32698 4.63803C2 5.27976 2 6.11984 2 7.8V16.2C2 17.8802 2 18.7202 2.32698 19.362C2.6146 19.9265 3.07354 20.3854 3.63803 20.673C4.27976 21 5.11984 21 6.8 21Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+            const iconContainer = this.el("div", {
+                innerHTML: iconSvg
+            });
+            loading.appendChild(iconContainer.firstElementChild);
+
+            loading.appendChild(this.el("h3", { textContent: "Gathering media..." }));
+            loading.appendChild(this.el("p", { textContent: "Looking for your downloaded images and videos." }));
+
+            container.appendChild(loading);
+            startLoading();
+
+            return wrapper;
+        }
+
+        _canRender(token, container) {
+            return token === this._renderToken &&
+                this._container === container &&
+                this.library?.activeTab === "media" &&
+                container?.isConnected;
+        }
+
+        // [audit] SEC-4 — the MIME type is parsed out of the file's own metadata, so it is
+        // attacker-controlled for any file the user downloaded. It ends up as a Blob type
+        // behind a blob: URL created in privileged chrome. The URL only ever reaches an
+        // <img src>, so this is contained today — but there is no reason to mint a
+        // chrome-origin blob: URL claiming to be text/html or image/svg+xml on the strength
+        // of four bytes in an ID3 frame.
+        static COVER_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+        _coverMime(raw) {
+            const mime = String(raw || "").trim().toLowerCase();
+            if (ZenLibraryMedia.COVER_MIME_TYPES.has(mime)) return mime;
+            // ID3v2.2 uses a three-character format code ("JPG"/"PNG") rather than a MIME type.
+            if (mime === "jpg" || mime === "jpeg") return "image/jpeg";
+            if (mime === "png") return "image/png";
+            return "image/jpeg";
+        }
+
+        async _extractCover(file) {
+            try {
+                // [audit] PERF-2 — was nsIFileInputStream + nsIBinaryInputStream.readByteArray,
+                // a blocking 2 MB main-thread read per audio file. IOUtils.read does the same
+                // work off-thread.
+                //
+                // Read the first 2MB to be safe for MP4/FLAC metadata.
+                const bytes = await IOUtils.read(file.path, { maxBytes: 2048 * 1024 });
+                if (!bytes || bytes.length < 16) return null;
+
+                const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+                // 1. ID3v2 (MP3/WAV)
+                if (view.getUint8(0) === 0x49 && view.getUint8(1) === 0x44 && view.getUint8(2) === 0x33) {
+                    const version = view.getUint8(3);
+                    let offset = 10;
+                    const tagSize = ((view.getUint8(6) & 0x7f) << 21) | ((view.getUint8(7) & 0x7f) << 14) | ((view.getUint8(8) & 0x7f) << 7) | (view.getUint8(9) & 0x7f);
+
+                    while (offset < tagSize && offset < bytes.length - 10) {
+                        const frameId = String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3));
+                        let frameSize;
+                        if (version === 3) {
+                            frameSize = view.getUint32(offset + 4);
+                        } else if (version === 4) {
+                            frameSize = ((view.getUint8(offset + 4) & 0x7f) << 21) | ((view.getUint8(offset + 5) & 0x7f) << 14) | ((view.getUint8(offset + 6) & 0x7f) << 7) | (view.getUint8(offset + 7) & 0x7f);
+                        } else break;
+
+                        if (frameId === "APIC") {
+                            let innerOffset = offset + 10;
+                            const encoding = view.getUint8(innerOffset++);
+                            let mimeType = "";
+                            while (innerOffset < bytes.length && view.getUint8(innerOffset) !== 0) {
+                                mimeType += String.fromCharCode(view.getUint8(innerOffset++));
+                            }
+                            innerOffset++;
+                            const picType = view.getUint8(innerOffset++);
+                            if (encoding === 0 || encoding === 3) {
+                                while (innerOffset < bytes.length && view.getUint8(innerOffset) !== 0) innerOffset++;
+                                innerOffset++;
+                            } else {
+                                while (innerOffset < bytes.length - 1 && view.getUint16(innerOffset) !== 0) innerOffset += 2;
+                                innerOffset += 2;
+                            }
+                            if (innerOffset >= bytes.length) return null;
+                            const dataSize = (offset + 10 + frameSize) - innerOffset;
+                            if (dataSize <= 0) return null;
+                            const data = bytes.slice(innerOffset, innerOffset + dataSize);
+                            return this._objectUrl(new Blob([data], { type: this._coverMime(mimeType) }));
+                        }
+                        if (frameSize <= 0) break;
+                        offset += 10 + frameSize;
+                    }
+                }
+
+                // 2. FLAC
+                if (view.getUint8(0) === 0x66 && view.getUint8(1) === 0x4c && view.getUint8(2) === 0x61 && view.getUint8(3) === 0x43) {
+                    let offset = 4;
+                    let isLastBlock = false;
+                    while (!isLastBlock && offset < bytes.length - 4) {
+                        const header = view.getUint8(offset);
+                        isLastBlock = (header & 0x80) !== 0;
+                        const blockType = header & 0x7f;
+                        const blockSize = (view.getUint8(offset + 1) << 16) | (view.getUint8(offset + 2) << 8) | view.getUint8(offset + 3);
+                        if (blockType === 6) { // PICTURE
+                            let pOffset = offset + 4;
+                            pOffset += 4; // Skip type
+                            const mimeLen = view.getUint32(pOffset); pOffset += 4;
+                            let mimeType = "";
+                            for (let i = 0; i < mimeLen; i++) mimeType += String.fromCharCode(view.getUint8(pOffset++));
+                            const descLen = view.getUint32(pOffset); pOffset += 4;
+                            pOffset += descLen + 16; // Skip desc, w, h, d, c
+                            const dataLen = view.getUint32(pOffset); pOffset += 4;
+                            if (pOffset + dataLen <= bytes.length) {
+                                return this._objectUrl(new Blob(
+                                    [bytes.slice(pOffset, pOffset + dataLen)],
+                                    { type: this._coverMime(mimeType) }
+                                ));
+                            }
+                        }
+                        offset += 4 + blockSize;
+                    }
+                }
+
+                // 3. MP4 (M4A/ALAC/MOV)
+                // Search for 'covr' inside 'ilst'
+                const findAtom = (start, end, target) => {
+                    let i = start;
+                    while (i < end - 8) {
+                        const size = view.getUint32(i);
+                        const type = String.fromCharCode(view.getUint8(i + 4), view.getUint8(i + 5), view.getUint8(i + 6), view.getUint8(i + 7));
+                        // [audit] A size below the 8-byte atom header is malformed. It used
+                        // to only break on exactly 0, so sizes 1-7 walked the whole buffer a
+                        // byte or two at a time before giving up.
+                        if (size < 8) break;
+                        if (type === target) return { start: i + 8, end: i + size };
+                        i += size;
+                    }
+                    return null;
+                };
+
+                const ftyp = findAtom(0, bytes.length, "ftyp");
+                if (ftyp) {
+                    const moov = findAtom(0, bytes.length, "moov");
+                    if (moov) {
+                        const udta = findAtom(moov.start, moov.end, "udta");
+                        if (udta) {
+                            const meta = findAtom(udta.start, udta.end, "meta");
+                            if (meta) {
+                                const ilst = findAtom(meta.start + 4, meta.end, "ilst"); // Skip 4 bytes for meta flag
+                                if (ilst) {
+                                    const covr = findAtom(ilst.start, ilst.end, "covr");
+                                    if (covr) {
+                                        const data = findAtom(covr.start, covr.end, "data");
+                                        if (data) {
+                                            // MP4 'data' atom: 8 bytes header, 4 bytes version/flag (skipped by findAtom), 4 bytes reserved
+                                            // Actually findAtom moves to start of inner content.
+                                            // The content of 'data' atom starts with 8 bytes: 4 flags + 4 empty
+                                            const pOffset = data.start + 8;
+                                            const dataLen = (data.end - data.start) - 8;
+                                            if (pOffset + dataLen <= bytes.length) {
+                                                return this._objectUrl(new Blob(
+                                                    [bytes.slice(pOffset, pOffset + dataLen)],
+                                                    { type: "image/jpeg" }
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) { }
+            return null;
+        }
+
+        // [audit] PERF-1 — this was a fully synchronous recursive nsIFile walk
+        // (directoryEntries / isDirectory / fileSize / lastModifiedTime are all blocking
+        // main-thread I/O), and it was called straight from the search box's oninput and
+        // from every filter-pill click. On a large Downloads folder that stalled the entire
+        // browser UI once per keystroke.
+        //
+        // Three changes, in order of how much they matter:
+        //   1. IOUtils.getChildren / IOUtils.stat instead — genuinely off-thread.
+        //   2. The scan is cached for the window's lifetime. Searching and filtering are
+        //      pure functions of an already-fetched list; they have no business touching
+        //      the disk at all. See renderList's callers. The cache is kept current by
+        //      _revalidate() (directory mtimes on open) and the Downloads view (init()).
+        //   3. File.createFromNsIFile is no longer called for every file up front. It was
+        //      building a Gecko File object for every media file in Downloads on every
+        //      scan, purely so that a drag *might* be instant. It is now created on demand
+        //      in the dragstart handler, which is early enough.
+
+        // Every list that reaches renderList() is newest-first: _scan() and the seed sort, the cache holds the scan's output, and deletes only filter it.
+        async fetchDownloads({ force = false, onProgress = null, seedPromise = null } = {}) {
+            if (!force && this._scanCache) return this._scanCache;
+            // Collapse concurrent callers onto one scan rather than starting several.
+            if (this._scanPromise) return this._scanPromise;
+
+            this._scanPromise = this._scan(onProgress, seedPromise)
+                .then(files => {
+                    this._scanCache = files;
+                    return files;
+                })
+                .catch(e => {
+                    console.error("ZenLibrary: Error scanning downloads", e);
+                    return this._scanCache || [];
+                })
+                .finally(() => { this._scanPromise = null; });
+
+            return this._scanPromise;
+        }
+
+        _mediaContentType(filename) {
+            const ext = String(filename || "").split(".").pop().toLowerCase();
+            if (ZenLibraryMedia.IMAGE_EXTS.includes(ext)) return "image/" + (ext === "jpg" ? "jpeg" : ext);
+            if (ZenLibraryMedia.VIDEO_EXTS.includes(ext)) return "video/" + ext;
+            if (ZenLibraryMedia.AUDIO_EXTS.includes(ext)) return "audio/" + ext;
+            return "";
+        }
+
+        // Case- and separator-insensitive path identity, shared by the walk and the history seed.
+        _pathKey(path) {
+            return String(path || "").replaceAll("\\", "/").toLowerCase();
+        }
+
+        // The item for a path the caller has already stat'ed as a file, or null when it is not media or under no root; the walk and the seed build identical items so a path found by both is the same card.
+        _mediaItem(path, info) {
+            const name = PathUtils.filename(path);
+            const contentType = this._mediaContentType(name);
+            const root = contentType ? this._rootFor(path) : null;
+            if (!root) return null;
+
+            // nsIFile is what the drag path and the cover reader want; built from a path already known to be a file, so no blocking probes.
+            let file;
+            try {
+                file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+                file.initWithPath(path);
+            } catch (e) {
+                return null;
+            }
+
+            const modified = info.lastModified || 0;
+            // One location per file: Zen saves its own screenshots into Downloads, and those belong to the Screenshots chip, not Downloads.
+            const source = root.id === "downloads" && ZenLibraryMedia.SCREENSHOT_NAME.test(name) ? "screenshots" : root.id;
+            // No Gecko File here: the drag carries the nsIFile via mozSetDataAt, and the card's pointerdown warms the fallback File on demand.
+            return {
+                id: `local_${path}_${modified}`,
+                filename: name,
+                size: info.size || 0,
+                status: "completed",
+                url: Services.io.newFileURI(file).spec,
+                contentType,
+                timestamp: modified,
+                targetPath: path,
+                source,
+                file,
+                raw: { target: { path }, lastModified: modified }
+            };
+        }
+
+        async _historyList() {
+            const { DownloadHistory } = ChromeUtils.importESModule("resource://gre/modules/DownloadHistory.sys.mjs");
+            const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
+            const { PrivateBrowsingUtils } = ChromeUtils.importESModule("resource://gre/modules/PrivateBrowsingUtils.sys.mjs");
+            const isPrivate = PrivateBrowsingUtils.isWindowPrivate(window);
+            return DownloadHistory.getList({ type: isPrivate ? Downloads.ALL : Downloads.PUBLIC });
+        }
+
+        // The root the walk would list this path under, or null: a media file within SCAN_DEPTH of a root, no dotfile segment. The deepest root wins, so a user folder inside Downloads tags its files as the user's. Download paths are untrusted strings, so nothing else parses them.
+        _rootFor(path) {
+            if (typeof path !== "string") return null;
+            const key = this._pathKey(path);
+            let best = null;
+            for (const root of this._roots || (this._roots = this._scanRoots())) {
+                const rootKey = this._pathKey(root.path).replace(/\/+$/, "") + "/";
+                if (!key.startsWith(rootKey)) continue;
+                if (!best || rootKey.length > best.rootKey.length) best = { root, rootKey };
+            }
+            if (!best) return null;
+            const parts = key.slice(best.rootKey.length).split("/");
+            if (parts.length - 1 > ZenLibraryMedia.SCAN_DEPTH || parts.some(p => !p || p.startsWith("."))) return null;
+            return this._mediaContentType(parts[parts.length - 1]) ? best.root : null;
+        }
+
+        // Download history is one Places read, so the newest files can paint before the folder walk finishes. Only rows the walk would also find are used, so the section shows the same files either way — just sooner.
+        async fetchRecentHistoryMedia(limit = ZenLibraryMedia.HISTORY_SEED_LIMIT) {
+            if (!(this._roots = this._scanRoots()).length) return [];
+            const when = (d) => Number(d.endTime || d.startTime || 0);
+
+            try {
+                const list = await this._historyList();
+                const rows = (await list.getAll()).filter(d => this._rootFor(d?.target?.path)).sort((a, b) => when(b) - when(a));
+
+                // Re-downloads of one path are one file; dedupe before taking the limit so they do not eat into it.
+                const seen = new Set();
+                const paths = [];
+                for (const d of rows) {
+                    const key = this._pathKey(d.target.path);
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    paths.push(d.target.path);
+                    if (paths.length >= limit) break;
+                }
+
+                const items = [];
+                for (let i = 0; i < paths.length; i += ZenLibraryMedia.SCAN_BATCH_SIZE) {
+                    const batch = await Promise.all(paths.slice(i, i + ZenLibraryMedia.SCAN_BATCH_SIZE).map(async (path) => {
+                        let info;
+                        try {
+                            info = await IOUtils.stat(path);
+                        } catch (e) {
+                            return null;
+                        }
+                        return info.type === "directory" ? null : this._mediaItem(path, info);
+                    }));
+                    items.push(...batch.filter(Boolean));
+                }
+                return this._sorted(items);
+            } catch (e) {
+                console.error("ZenLibrary: Error reading download history for media", e);
+                return [];
+            }
+        }
+
+        _dirPath(key, ...append) {
+            try {
+                const dir = Services.dirsvc.get(key, Ci.nsIFile);
+                for (const name of append) dir.append(name);
+                return dir.path;
+            } catch (e) { return ""; }
+        }
+
+        // Memoised: it is the OS Downloads folder, and _rootFor asks per history row.
+        _downloadsRootPath() {
+            if (this._rootPath !== undefined) return this._rootPath;
+            this._rootPath = this._dirPath("Dwnld") || this._dirPath("Home", "Downloads");
+            if (!this._rootPath) console.error("ZenLibrary: Could not find Downloads directory");
+            return this._rootPath;
+        }
+
+        // Memoised like Downloads (the watch tick asks every WATCH_MS): easel captures live in the store's assets/ tree; the store is read only if the easel mod is installed.
+        _easelAssetsPath() {
+            if (this._easelPath !== undefined) return this._easelPath;
+            try {
+                this._easelPath = PathUtils.join(ChromeUtils.importESModule(ZenLibraryMedia.EASEL_STORE_URL).EaselStore.root, "assets");
+            } catch (e) { this._easelPath = ""; }
+            return this._easelPath;
+        }
+
+        // Memoised; the OS Pictures folder goes by a different key per platform, and Windows and Linux capture tools save into its Screenshots subfolder.
+        _screenshotsPath() {
+            if (this._screenshotsDir !== undefined) return this._screenshotsDir;
+            const pictures = this._dirPath("Pics") || this._dirPath("Pct") || this._dirPath("XDGPict") || this._dirPath("Home", "Pictures");
+            this._screenshotsDir = pictures ? PathUtils.join(pictures, "Screenshots") : "";
+            return this._screenshotsDir;
+        }
+
+        _userDirs() {
+            let raw = "";
+            try { raw = Services.prefs.getStringPref(ZenLibraryMedia.USER_DIRS_PREF, ""); } catch (e) { }
+            // Trailing separators are dropped (a drive root like D:\ keeps its one) so "…\Downloads\" and the Downloads root are one root.
+            return raw.split(/[;\n]/).map(p => p.trim().replace(/(?<=[^\\/:])[\\/]+$/, "")).filter(p => p && PathUtils.isAbsolute(p));
+        }
+
+        // Every directory a walk starts from, as { id, path }; ids are the location chips. Folders that do not exist are skipped by the walk, not here.
+        _scanRoots() {
+            const roots = [];
+            const add = (id, path) => {
+                if (path && !roots.some(r => this._pathKey(r.path) === this._pathKey(path))) roots.push({ id, path });
+            };
+            add("downloads", this._downloadsRootPath());
+            add("easel", this._easelAssetsPath());
+            add("screenshots", this._screenshotsPath());
+            for (const path of this._userDirs()) add("user", path);
+            return roots;
+        }
+
+        async _scan(onProgress = null, seedPromise = null) {
+            const roots = this._roots = this._scanRoots();
+            const dirMtimes = new Map();
+            for (const root of roots) {
+                try {
+                    dirMtimes.set(this._pathKey(root.path), { path: root.path, mtime: (await IOUtils.stat(root.path)).lastModified || 0 });
+                } catch (e) {
+                    // Only Downloads is expected to exist; the other roots are optional folders.
+                    if (root.id === "downloads") console.error("ZenLibrary: Downloads directory does not exist:", root.path);
+                }
+            }
+            if (!dirMtimes.size) return [];
+
+            // The seed and the walk reach the same files by different routes; the path key decides who got there first.
+            const mediaFiles = [];
+            const seen = new Set();
+            const add = (items) => {
+                for (const item of items) {
+                    const key = this._pathKey(item.targetPath);
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    mediaFiles.push(item);
+                }
+            };
+            const seeded = Promise.resolve(seedPromise || []).then(add, () => { });
+
+            // Breadth-first with an explicit queue rather than recursion, so the depth cap
+            // is a property of the traversal instead of the call stack, and so a directory
+            // that fails to read cannot abandon its siblings.
+            let level = [...dirMtimes.values()];
+            for (let depth = 0; depth <= ZenLibraryMedia.SCAN_DEPTH && level.length; depth++) {
+                const next = [];
+                for (const dir of level) {
+                    let children;
+                    try {
+                        children = await IOUtils.getChildren(dir.path);
+                    } catch (e) {
+                        continue;
+                    }
+                    // Only directories actually listed count: a change in one the depth cap skipped would not show anyway.
+                    dirMtimes.set(this._pathKey(dir.path), dir);
+
+                    const inspectChild = async (path) => {
+                        if (PathUtils.filename(path).startsWith(".")) return null;
+
+                        let info;
+                        try {
+                            info = await IOUtils.stat(path);
+                        } catch (e) {
+                            return null;
+                        }
+
+                        if (info.type === "directory") {
+                            // A root nested in another (a user folder inside Downloads, Pictures over Screenshots) is already queued at level 0; walking it again from here would list its subtree twice.
+                            if (!dirMtimes.has(this._pathKey(path))) next.push({ path, mtime: info.lastModified || 0 });
+                            return null;
+                        }
+                        return this._mediaItem(path, info);
+                    };
+
+                    // Stat in chunks rather than one Promise.all over the whole directory:
+                    // a Downloads folder with thousands of files would otherwise queue that
+                    // many concurrent stats at once.
+                    for (let i = 0; i < children.length; i += ZenLibraryMedia.SCAN_BATCH_SIZE) {
+                        const batch = await Promise.all(children.slice(i, i + ZenLibraryMedia.SCAN_BATCH_SIZE).map(inspectChild));
+                        const found = batch.filter(Boolean);
+                        if (!found.length) continue;
+                        add(found);
+                        // The live array: the throttle sorts a snapshot when it fires.
+                        if (onProgress) onProgress(mediaFiles);
+                    }
+                }
+                level = next;
+            }
+
+            await seeded;
+            this._dirMtimes = dirMtimes;
+            return mediaFiles.sort((a, b) => b.timestamp - a.timestamp);
+        }
+
+        // One stat per directory the last walk listed: cheap next to the walk's stat per file, and enough to tell whether it needs repeating. A root added or removed in Settings since that walk counts too.
+        async _dirsChanged() {
+            const dirs = [...this._dirMtimes.values()];
+            if (!dirs.length) return true;
+            const rootKeys = (roots) => (roots || []).map(r => this._pathKey(r.path)).sort().join("\n");
+            if (rootKeys(this._scanRoots()) !== rootKeys(this._roots)) return true;
+            for (let i = 0; i < dirs.length; i += ZenLibraryMedia.SCAN_BATCH_SIZE) {
+                const changed = await Promise.all(dirs.slice(i, i + ZenLibraryMedia.SCAN_BATCH_SIZE).map(async (dir) => {
+                    try {
+                        return ((await IOUtils.stat(dir.path)).lastModified || 0) !== dir.mtime;
+                    } catch (e) {
+                        return true;
+                    }
+                }));
+                if (changed.some(Boolean)) return true;
+            }
+            return false;
+        }
+
+        // The cached grid is already on screen; re-walk only if a directory changed since that walk, and patch the difference in.
+        async _revalidate(token, container) {
+            if (this._revalidating) return;
+            this._revalidating = true;
+            try {
+                // A walk already running (an earlier open's revalidation) is the one to wait for.
+                let walk = this._scanPromise;
+                if (!walk) {
+                    if (!(await this._dirsChanged()) || !this._canRender(token, container)) return;
+                    walk = this.fetchDownloads({ force: true });
+                }
+                const downloads = await walk;
+                if (!this._canRender(token, container)) return;
+                await this._measurePreviews(downloads);
+                if (this._canRender(token, container)) this._renderIfChanged(downloads);
+            } finally {
+                this._revalidating = false;
+            }
+        }
+
+        // Re-checks the directories every WATCH_MS while this grid is showing; the timer retires itself once the grid is gone (close() never calls destroy()).
+        _watchDirs(token, container) {
+            clearInterval(this._watchTimer);
+            this._watchTimer = setInterval(() => {
+                if (!this._canRender(token, container)) {
+                    clearInterval(this._watchTimer);
+                    this._watchTimer = 0;
+                    return;
+                }
+                if (this._scanCache) this._revalidate(token, container);
+            }, ZenLibraryMedia.WATCH_MS);
+        }
+
+        // Kept current between opens by the Downloads list: a finished download under the root joins the cache (and the grid, if showing) without a walk.
+        async init() {
+            if (this._downloadsView) return;
+            this._downloadsView = { onDownloadChanged: (download) => this._onDownloadChanged(download) };
+            try {
+                const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
+                this._downloadsList = await Downloads.getList(Downloads.ALL);
+                if (this._downloadsView) this._downloadsList.addView(this._downloadsView);
+            } catch (e) {
+                console.error("ZenLibrary: Media could not watch downloads", e);
+                this._downloadsView = null;
+            }
+        }
+
+        async _onDownloadChanged(download) {
+            const path = download?.target?.path;
+            if (!this._scanCache || !this._rootFor(path)) return;
+            const key = this._pathKey(path);
+            const known = this._scanCache.find(item => this._pathKey(item.targetPath) === key);
+            if (download.deleted) {
+                if (!known) return;
+                this._scanCache = this._scanCache.filter(item => item !== known);
+            } else {
+                if (!download.succeeded || known) return;
+                let info;
+                try {
+                    info = await IOUtils.stat(path);
+                } catch (e) {
+                    return;
+                }
+                const item = info.type === "directory" ? null : this._mediaItem(path, info);
+                if (!item || !this._scanCache || this._scanCache.some(i => this._pathKey(i.targetPath) === key)) return;
+                this._scanCache = this._sorted([...this._scanCache, item]);
+            }
+            // The parent's mtime moved with the file; note it so the next open does not re-walk for a change already applied.
+            try {
+                const parent = PathUtils.parent(path);
+                const entry = this._dirMtimes.get(this._pathKey(parent));
+                if (entry) entry.mtime = (await IOUtils.stat(parent)).lastModified || 0;
+            } catch (e) { }
+            if (!this._container?.isConnected || this.library?.activeTab !== "media" || this._scanPromise) return;
+            const token = this._renderToken;
+            await this._measurePreviews(this._scanCache);
+            if (token === this._renderToken && this._container?.isConnected) this._renderIfChanged(this._scanCache);
+        }
+
+        // The current type pill, location chips and search term applied to a list; order is preserved.
+        _filterItems(downloads) {
+            const { IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS } = ZenLibraryMedia;
+            const term = this._searchTerm.toLowerCase();
+
+            return downloads.filter(d => {
+                if (this._locations.size && !this._locations.has(d.source)) return false;
+                const ext = d.filename.split('.').pop().toLowerCase();
+                const contentType = (d.contentType || "").toLowerCase();
+
+                const isImage = IMAGE_EXTS.includes(ext) || contentType.startsWith("image/");
+                const isVideo = VIDEO_EXTS.includes(ext) || contentType.startsWith("video/");
+                const isAudio = AUDIO_EXTS.includes(ext) || contentType.startsWith("audio/");
+
+                if (this._filter === "images" && !isImage) return false;
+                if (this._filter === "videos" && !isVideo) return false;
+                if (this._filter === "audio" && !isAudio) return false;
+                if (this._filter === "all" && !isImage && !isVideo && !isAudio) return false;
+
+                return !term || d.filename.toLowerCase().includes(term);
+            });
+        }
+
+        renderList(downloads) {
+            if (!this._container) return;
+            // Emptying the container disconnects the drag source, and a disconnected source
+            // never gets its dragend — so the arm/disarm pair has to be balanced here instead.
+            this._disarmDragCancel();
+            document.documentElement.removeAttribute("zen-library-dragging");
+            this._clearCoverJobs();
+            this._disconnectLazyObservers();
+            this._container.innerHTML = "";
+            this._container.classList.add("scrollbar-visible");
+            this._listSource = downloads;
+
+            const mediaItems = this._filterItems(downloads);
+            this._setCount(downloads.length);
+
+            if (mediaItems.length === 0) {
+                this._renderedIds = [];
+                this._container.innerHTML = "";
+                const emptyState = this.el("div", { className: "empty-state" });
+
+                const iconSvg = `<svg class="empty-icon media-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 3L8 8M16 3L15 8M22 8H2M6.8 21H17.2C18.8802 21 19.7202 21 20.362 20.673C20.9265 20.3854 21.3854 19.9265 21.673 19.362C22 18.7202 22 17.8802 22 16.2V7.8C22 6.11984 22 5.27976 21.673 4.63803C21.3854 4.07354 20.9265 3.6146 20.362 3.32698C19.7202 3 18.8802 3 17.2 3H6.8C5.11984 3 4.27976 3 3.63803 3.32698C3.07354 3.6146 2.6146 4.07354 2.32698 4.63803C2 5.27976 2 6.11984 2 7.8V16.2C2 17.8802 2 18.7202 2.32698 19.362C2.6146 19.9265 3.07354 20.3854 3.63803 20.673C4.27976 21 5.11984 21 6.8 21Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+                const iconContainer = this.el("div");
+                iconContainer.innerHTML = iconSvg;
+
+                emptyState.appendChild(iconContainer.firstElementChild);
+                const kind = this._filter !== "all" ? this._filter : "images, videos, or audio files";
+                const where = ZenLibraryMedia.LOCATIONS.filter(([id]) => this._locations.has(id)).map(([, label]) => label).join(", ");
+                let hint;
+                if (this._searchTerm) hint = "Try a different search term.";
+                else if (this._locations.has("user") && !this._userDirs().length) hint = "Add your own folders under Settings → Sine Mods → Zen Library.";
+                else if (where) hint = `We couldn't find any ${kind} from ${where}.`;
+                else hint = `We couldn't find any ${kind} in your media locations.`;
+                emptyState.appendChild(this.el("h3", { textContent: this._searchTerm || where ? "No matching media" : "No media found" }));
+                emptyState.appendChild(this.el("p", { textContent: hint }));
+
+                this._container.appendChild(emptyState);
+                return;
+            }
+
+            const visibleLimit = Math.min(this._visibleLimit || ZenLibraryMedia.INITIAL_RENDER_LIMIT, mediaItems.length);
+            const visibleItems = mediaItems.slice(0, visibleLimit);
+            this._renderedIds = visibleItems.map(item => item.id);
+            const colCount = this._columnCount();
+
+            const masonryWrapper = this.el("div", {
+                className: "media-masonry-wrapper"
+            });
+            const grid = this._container;
+            grid.innerHTML = "";
+            grid.appendChild(masonryWrapper);
+
+            // Create columns
+            const columns = [];
+            for (let i = 0; i < colCount; i++) {
+                const col = this.el("div", { className: "media-masonry-column" });
+                masonryWrapper.appendChild(col);
+                columns.push(col);
+            }
+
+            // No wheel handler: .media-grid is an ordinary vertical scroller, so native (smooth, APZ) scrolling applies like every other list.
+
+            // Distribute round-robin to columns
+            visibleItems.forEach((item, index) => columns[index % colCount].appendChild(this._createCard(item)));
+
+            if (visibleLimit < mediaItems.length) this._appendLoadMore(masonryWrapper);
+        }
+
+        // One grid card, complete with lazy preview and drag/click/context wiring; not attached anywhere.
+        _createCard(item) {
+            const { VIDEO_EXTS, AUDIO_EXTS } = ZenLibraryMedia;
+            const ext = item.filename.split('.').pop().toLowerCase();
+            const contentType = item.contentType.toLowerCase();
+            const isVideo = VIDEO_EXTS.includes(ext) || contentType.startsWith("video/");
+            const isAudio = AUDIO_EXTS.includes(ext) || contentType.startsWith("audio/");
+            const isGif = ext === "gif" || contentType === "image/gif";
+            const fileUrl = item.url;
+
+            const card = this.el("div", {
+                className: `media-card ${isAudio && this._playingId === item.id ? 'playing' : ''}`,
+                dataset: { id: item.id },
+                draggable: true,
+                // A drag always begins with a press, and a press is followed by movement
+                // before dragstart fires. That gap is enough for File.createFromNsIFile
+                // to land, so this covers the one case the scan's warming cannot: a card
+                // dragged before the warming promise for it has resolved.
+                onpointerdown: () => {
+                    if (this._fileCache.has(item.id) || !item.file) return;
+                    File.createFromNsIFile(item.file)
+                        .then(f => this._fileCache.set(item.id, f))
+                        .catch(() => { });
+                },
+                ondragstart: (e) => {
+                    // Reset webview position during drag
+                    document.documentElement.setAttribute("zen-library-dragging", "true");
+                    this._armDragCancel();
+
+                    try {
+                        if (!item.file || !item.file.exists()) return;
+
+                        const dataTransfer = e.dataTransfer;
+                        dataTransfer.effectAllowed = "all";
+
+                        // Create a styled drag ghost image
+                        const ghost = document.createElement("div");
+                        ghost.style.cssText = `
+                            position: fixed; top: -1000px; left: -1000px;
+                            width: 160px; background: #1e1e23; border-radius: 12px;
+                            overflow: hidden; z-index: 999999; pointer-events: none;
+                            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+                        `;
+
+                        const previewWrap = document.createElement("div");
+                        previewWrap.style.cssText = `
+                            width: 100%; height: 100px; overflow: hidden;
+                            display: flex; align-items: center; justify-content: center;
+                            background: rgba(255, 255, 255, 0.03);
+                        `;
+
+                        if (!isAudio && !isVideo) {
+                            const thumb = document.createElement("img");
+                            thumb.src = fileUrl;
+                            thumb.style.cssText = `width: 100%; height: 100%; object-fit: cover;`;
+                            previewWrap.appendChild(thumb);
+                        } else {
+                            const iconBox = document.createElement("div");
+                            iconBox.style.cssText = `
+                                width: 56px; height: 56px; display: flex; align-items: center; justify-content: center;
+                                background: linear-gradient(135deg, ${isAudio ? '#667eea 0%, #764ba2 100%' : '#1a1a1a 0%, #333 100%'});
+                                border-radius: 14px; border: 2px solid rgba(255,255,255,0.1);
+                                box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+                            `;
+                            if (isVideo) {
+                                previewWrap.style.background = "repeating-linear-gradient(-45deg, #111, #111 6px, #1a1a1a 6px, #1a1a1a 12px)";
+                                iconBox.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 5V19L19 12L8 5Z" fill="white"/></svg>`;
+                            } else {
+                                iconBox.innerHTML = `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
+                            }
+                            previewWrap.appendChild(iconBox);
+                        }
+                        ghost.appendChild(previewWrap);
+
+                        const infoBox = document.createElement("div");
+                        infoBox.style.cssText = `padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; border-top: 1px solid rgba(255,255,255,0.05);`;
+                        const titleEl = document.createElement("div");
+                        titleEl.textContent = item.filename;
+                        titleEl.style.cssText = `font-size: 11px; color: rgba(255,255,255,0.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600;`;
+                        const metaEl = document.createElement("div");
+                        metaEl.textContent = this.formatBytes(item.size);
+                        metaEl.style.cssText = `font-size: 9px; color: rgba(255, 255, 255, 0.4);`;
+                        infoBox.appendChild(titleEl);
+                        infoBox.appendChild(metaEl);
+                        ghost.appendChild(infoBox);
+
+                        document.documentElement.appendChild(ghost);
+                        dataTransfer.setDragImage(ghost, 80, 50);
+                        setTimeout(() => ghost.remove(), 0);
+
+                        // Native transfer.
+                        //
+                        // EXACTLY ONE file flavour may be attached. dataTransfer.files is
+                        // built from every application/x-moz-file item on the transfer,
+                        // and zen-easel's drop handler loops over that list placing each
+                        // one 24px down and right of the last — so attaching the file
+                        // twice puts two overlapping copies on the board.
+                        //
+                        // That is not hypothetical: the original code called both
+                        // setData("application/x-moz-file", item.file) and items.add(),
+                        // and got away with it only because setData is specified to take
+                        // a DOMString. The nsIFile was stringified into something inert,
+                        // so the flavour never actually existed and items.add() was doing
+                        // all the work. Switching that line to mozSetDataAt made it real,
+                        // and the duplicate appeared.
+                        //
+                        // mozSetDataAt is preferred as the one that carries the file: it
+                        // is the documented way to put a non-string on a DataTransfer, it
+                        // is what the Downloads section already uses, and — unlike
+                        // items.add — it is synchronous and needs no warmed File object.
+                        const usedNativeFlavor = typeof dataTransfer.mozSetDataAt === "function";
+                        if (usedNativeFlavor) {
+                            dataTransfer.mozSetDataAt("application/x-moz-file", item.file, 0);
+                        }
+
+                        const specStr = Services.io.newFileURI(item.file).spec;
+                        dataTransfer.setData("text/uri-list", specStr);
+                        // The filename, as a last resort for a drop target that
+                        // understands nothing else. Note that the easel treats a bare
+                        // text/plain drop as "make a text object", so if this is the only
+                        // flavour that survives, a dropped picture becomes its own
+                        // filename on the board. That is the symptom to look for if the
+                        // file flavours above ever stop arriving.
+                        dataTransfer.setData("text/plain", item.filename);
+
+                        // Fallback only, for a build with no mozSetDataAt. Never runs
+                        // alongside the native flavour above — see the duplicate note
+                        // there. items.add() needs a File that already exists, because
+                        // dragstart is synchronous and cannot await one into being; the
+                        // cache is warmed during the scan and topped up on pointerdown
+                        // for exactly that reason.
+                        if (!usedNativeFlavor) {
+                            const cachedGeckoFile = this._fileCache.get(item.id);
+                            if (cachedGeckoFile) {
+                                dataTransfer.items.add(cachedGeckoFile);
+                            } else {
+                                console.warn(
+                                    "[ZenLibrary Media] no File cached for", item.filename,
+                                    "— this drag carries only the path flavours"
+                                );
+                                File.createFromNsIFile(item.file).then(f => {
+                                    this._fileCache.set(item.id, f);
+                                }).catch(() => { });
+                            }
+                        }
+
+                        e.stopPropagation();
+                    } catch (err) {
+                        console.error("Drag error:", err);
+                    }
+
+                    card.classList.add("dragging");
+                },
+                ondragend: (e) => {
+                    document.documentElement.removeAttribute("zen-library-dragging");
+                    card.classList.remove("dragging");
+                    this._disarmDragCancel();
+                },
+                oncontextmenu: (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (document.documentElement.hasAttribute("zen-library-dragging")) {
+                        this._cancelActiveDrag();
+                        return;
+                    }
+                    this._showContextMenu(e, item);
+                },
+                onclick: (e) => {
+                    if (isAudio) {
+                        this.toggleAudio(item, card);
+                    } else {
+                        this.showGlance(item, e);
+                    }
+                },
+                title: `${item.filename}\n(Right-click for options)`
+            });
+
+            const previewContainer = this.el("div", {
+                className: isAudio ? "audio-preview-container" : "media-preview-container"
+            });
+
+            if (isVideo) {
+                const videoEl = this.el("video", {
+                    preload: "metadata",
+                    muted: true
+                });
+                this._observePreview(videoEl, fileUrl, item);
+                previewContainer.appendChild(videoEl);
+
+                const durationBadge = this.el("div", { className: "video-duration-badge", textContent: "..." });
+                videoEl.addEventListener("loadedmetadata", () => {
+                    const mins = Math.floor(videoEl.duration / 60);
+                    const secs = Math.floor(videoEl.duration % 60);
+                    durationBadge.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+                });
+                previewContainer.appendChild(durationBadge);
+            } else if (isGif) {
+                const imgEl = this.el("img", {
+                    loading: "lazy",
+                });
+                this._observePreview(imgEl, fileUrl, item);
+                previewContainer.appendChild(imgEl);
+                const gifBadge = this.el("div", { className: "gif-badge", textContent: "GIF" });
+                previewContainer.appendChild(gifBadge);
+            } else if (isAudio) {
+                const audioIconContainer = this.el("div", {
+                    className: "audio-preview-icon"
+                });
+
+                const cachedCover = this._coverCache.get(item.id);
+                if (cachedCover) {
+                    audioIconContainer.appendChild(this.el("img", { src: cachedCover, className: "cover-art" }));
+                } else {
+                    audioIconContainer.appendChild(this.el("div", { className: "icon-mask icon-audio placeholder-icon" }));
+
+                    // Only try extraction if we haven't failed before (cachedCover would be null if failed)
+                    if (cachedCover === undefined) {
+                        this._queueCover(item, (coverUrl) => {
+                            if (!audioIconContainer.isConnected) return;
+                            audioIconContainer.querySelector(".placeholder-icon")?.replaceWith(this.el("img", { src: coverUrl, className: "cover-art" }));
+                        });
+                    }
+                }
+
+                audioIconContainer.appendChild(this.el("div", { className: "progress-bar-container" }, [
+                    this.el("div", { className: "progress-bar-fill" })
+                ]));
+                audioIconContainer.appendChild(this.el("div", { className: "audio-control-overlay" }, [
+                    this.el("div", { className: "icon-mask icon-play" }),
+                    this.el("div", { className: "icon-mask icon-pause" })
+                ]));
+                previewContainer.appendChild(audioIconContainer);
+
+                const durationBadge = this.el("div", { className: "video-duration-badge", textContent: "..." });
+
+                const audioEl = this.el("audio", {
+                    preload: "metadata",
+                    style: "display: none;"
+                });
+                this._observePreview(audioEl, fileUrl);
+
+                audioEl.addEventListener("loadedmetadata", () => {
+                    const mins = Math.floor(audioEl.duration / 60);
+                    const secs = Math.floor(audioEl.duration % 60);
+                    durationBadge.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+                    audioEl.remove();
+                });
+
+                audioEl.addEventListener("error", () => {
+                    durationBadge.textContent = "";
+                    audioEl.remove();
+                });
+
+                previewContainer.appendChild(audioEl);
+                previewContainer.appendChild(durationBadge);
+            } else {
+                const imgEl = this.el("img", {
+                    loading: "lazy",
+                });
+                this._observePreview(imgEl, fileUrl, item);
+                previewContainer.appendChild(imgEl);
+            }
+
+            card.appendChild(previewContainer);
+            card.appendChild(this.el("div", {
+                className: "media-card-name",
+                textContent: item.filename
+            }));
+            return card;
+        }
+
+        _appendLoadMore(masonryWrapper) {
+            const more = this.el("div", {
+                className: "media-load-more-sentinel",
+                "aria-hidden": "true"
+            });
+            masonryWrapper.appendChild(more);
+            this._observeMore(more);
+        }
+
+        // A scan that grew the list past the visible cards without changing them still needs a sentinel to page into.
+        _ensureLoadMore() {
+            const masonryWrapper = this._container?.querySelector(".media-masonry-wrapper");
+            if (masonryWrapper && !masonryWrapper.querySelector(".media-load-more-sentinel")) this._appendLoadMore(masonryWrapper);
+        }
+
+        // Pages from _listSource rather than a captured list, so a scan that finished after the paint is what gets paged.
+        _observeMore(sentinel) {
+            if (!sentinel || !this._container) return;
+            this._moreObserver?.disconnect();
+            this._moreObserver = new IntersectionObserver((entries) => {
+                if (!entries.some(entry => entry.isIntersecting)) return;
+                this._moreObserver?.disconnect();
+                this._moreObserver = null;
+                sentinel.remove();
+                this._visibleLimit = (this._visibleLimit || ZenLibraryMedia.INITIAL_RENDER_LIMIT) + ZenLibraryMedia.RENDER_BATCH_SIZE;
+                // Patched in, not rebuilt: the cards above stay put and the next batch slides in below them. _listSource is read after the measure so a scan that advanced meanwhile is what gets paged.
+                requestAnimationFrame(async () => {
+                    await this._measurePreviews(this._listSource || []);
+                    this._renderIfChanged(this._listSource || []);
+                });
+            }, { root: this._container, rootMargin: "350px 0px" });
+            this._moreObserver.observe(sentinel);
+        }
+
+        // Sets a preview's aspect ratio from the cache so the card is its final height before the file loads, and learns it on load for next time.
+        _reserveAspect(el, item) {
+            const known = this._aspectCache.get(item.id);
+            if (known) el.style.aspectRatio = known;
+            const isVideo = el.localName === "video";
+            el.addEventListener(isVideo ? "loadedmetadata" : "load", () => {
+                this._rememberAspect(item, isVideo ? el.videoWidth : el.naturalWidth, isVideo ? el.videoHeight : el.naturalHeight);
+            }, { once: true });
+        }
+
+        _rememberAspect(item, width, height) {
+            if (width > 0 && height > 0) this._aspectCache.set(item.id, `${width} / ${height}`);
+        }
+
+        // Reads the dimensions of the first unseen images in the visible slice before their cards are placed; the load also warms the image cache their <img> reads from.
+        async _measurePreviews(items) {
+            const limit = this._visibleLimit || ZenLibraryMedia.INITIAL_RENDER_LIMIT;
+            const pending = this._filterItems(items).slice(0, limit)
+                .filter(item => item.contentType.startsWith("image/") && !this._aspectCache.has(item.id))
+                .slice(0, ZenLibraryMedia.EAGER_PREVIEWS);
+            if (!pending.length) return;
+            const measure = (item) => new Promise(resolve => {
+                const img = this.el("img");
+                img.onload = () => { this._rememberAspect(item, img.naturalWidth, img.naturalHeight); resolve(); };
+                img.onerror = () => resolve();
+                img.src = item.url;
+            });
+            // A slow decode should not hold the paint; anything still loading just sizes itself when it lands.
+            await Promise.race([Promise.all(pending.map(measure)), new Promise(resolve => setTimeout(resolve, ZenLibraryMedia.MEASURE_TIMEOUT_MS))]);
+        }
+
+        _observePreview(el, fileUrl, item = null) {
+            if (!el || !fileUrl) return;
+            el.dataset.src = fileUrl;
+            if (item) this._reserveAspect(el, item);
+            this._previewObserver = this._previewObserver || new IntersectionObserver((entries) => {
+                for (const entry of entries) {
+                    if (!entry.isIntersecting) continue;
+                    const media = entry.target;
+                    this._previewObserver?.unobserve(media);
+                    if (media.dataset.src && !media.src) {
+                        media.src = media.dataset.src;
+                    }
+                }
+            }, { root: this._container, rootMargin: "500px 0px" });
+            this._previewObserver.observe(el);
+        }
+
+        _disconnectLazyObservers() {
+            if (this._previewObserver) {
+                this._previewObserver.disconnect();
+                this._previewObserver = null;
+            }
+            if (this._moreObserver) {
+                this._moreObserver.disconnect();
+                this._moreObserver = null;
+            }
+        }
+
+        _armDragCancel() {
+            // Reset before the armed-guard, never after: dragend is NOT dispatched when the
+            // source node is disconnected (Firefox asserts exactly this in EventUtils.js), and
+            // renderList()/close() disconnect cards routinely. Leaving a stale _dragWasCancelled
+            // here made the next drag start pre-cancelled and rejected every drop window-wide.
+            this._dragWasCancelled = false;
+            this._dragCancelledAt = 0;
+            if (this._dragCancelArmed) return;
+            this._dragCancelArmed = true;
+            // `drag` fires on the chrome source even when the cursor is over the
+            // easel webview, which is where a right-click would otherwise be lost.
+            for (const type of DRAG_CANCEL_EVENTS) {
+                window.addEventListener(type, this._onDragCancelEvent, true);
+            }
+        }
+
+        _disarmDragCancel() {
+            this._dragWasCancelled = false;
+            this._dragCancelledAt = 0;
+            if (!this._dragCancelArmed) return;
+            this._dragCancelArmed = false;
+            for (const type of DRAG_CANCEL_EVENTS) {
+                window.removeEventListener(type, this._onDragCancelEvent, true);
+            }
+        }
+
+        // The cancel latch only makes sense while the session it cancelled is still winding
+        // down. Bounding it means that even if dragend never arrives, the listeners degrade to
+        // a cheap attribute check instead of vetoing every drop in the window forever.
+        _isCancelLatchLive() {
+            return this._dragWasCancelled &&
+                Date.now() - this._dragCancelledAt < DRAG_CANCEL_GRACE_MS;
+        }
+
+        _armContextMenuSuppress() {
+            this._suppressContextMenuUntil = Date.now() + DRAG_CANCEL_GRACE_MS;
+            if (!this._contextMenuSuppressArmed) {
+                this._contextMenuSuppressArmed = true;
+                window.addEventListener("contextmenu", this._onSuppressContextMenu, true);
+                document.addEventListener("popupshowing", this._onSuppressContextMenu, true);
+                // Hold the browser we armed. Disarming off a re-read of selectedBrowser would
+                // detach from whichever tab is current 500ms later and leak this listener onto
+                // the original one for the life of the window.
+                try {
+                    this._suppressBrowser = window.gBrowser?.selectedBrowser || null;
+                    this._suppressBrowser?.addEventListener("contextmenu", this._onSuppressContextMenu, true);
+                } catch (_) {
+                    this._suppressBrowser = null;
+                }
+            }
+            this._hideOpenContextMenus();
+            if (this._contextMenuSuppressTimer) clearTimeout(this._contextMenuSuppressTimer);
+            this._contextMenuSuppressTimer = setTimeout(() => this._disarmContextMenuSuppress(), DRAG_CANCEL_GRACE_MS);
+        }
+
+        _disarmContextMenuSuppress() {
+            if (this._contextMenuSuppressTimer) {
+                clearTimeout(this._contextMenuSuppressTimer);
+                this._contextMenuSuppressTimer = null;
+            }
+            if (!this._contextMenuSuppressArmed) return;
+            this._contextMenuSuppressArmed = false;
+            this._suppressContextMenuUntil = 0;
+            window.removeEventListener("contextmenu", this._onSuppressContextMenu, true);
+            document.removeEventListener("popupshowing", this._onSuppressContextMenu, true);
+            try {
+                this._suppressBrowser?.removeEventListener("contextmenu", this._onSuppressContextMenu, true);
+            } catch (_) {}
+            this._suppressBrowser = null;
+        }
+
+        _onSuppressContextMenu(e) {
+            if (Date.now() > this._suppressContextMenuUntil) return;
+            // Scoped to menus. An unscoped popupshowing veto also swallowed the urlbar results
+            // panel, notification anchors and tooltips for the whole suppression window.
+            if (e.type === "popupshowing" && e.target?.localName !== "menupopup") return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.type === "popupshowing") {
+                try { e.target.hidePopup?.(); } catch (_) {}
+            }
+            this._hideOpenContextMenus();
+        }
+
+        _hideOpenContextMenus() {
+            for (const id of ["contentAreaContextMenu", "zen-media-context-menu"]) {
+                try { document.getElementById(id)?.hidePopup?.(); } catch (_) {}
+            }
+        }
+
+        _isEaselTab(tab) {
+            try {
+                const spec = (tab?.linkedBrowser?.currentURI?.spec || "").toLowerCase();
+                // Anchored to the scheme on purpose. A bare `includes("zen-easel")` also matched
+                // https://evil.example/zen-easel, so any page could advertise itself as a valid
+                // drop target and receive the file:// path and File for a dragged media item.
+                return spec.startsWith("about:easel") ||
+                    spec.startsWith("chrome://sine/content/zen-easel");
+            } catch (_) {
+                return false;
+            }
+        }
+
+        _isEmptyTab(tab) {
+            if (!tab) return false;
+            if (tab.hasAttribute?.("zen-empty-tab")) return true;
+            try {
+                const spec = (tab.linkedBrowser?.currentURI?.spec || "").toLowerCase();
+                return spec === "about:blank" || spec === "about:newtab" ||
+                    spec === "about:home" || spec === "about:privatebrowsing";
+            } catch (_) {
+                return false;
+            }
+        }
+
+        _isAllowedMediaDropTab(tab) {
+            return this._isEaselTab(tab) || this._isEmptyTab(tab);
+        }
+
+        _eventPath(e) {
+            try {
+                return e.composedPath?.() || [];
+            } catch (_) {
+                return [];
+            }
+        }
+
+        _isTabNode(n) {
+            return n.matches?.(".tabbrowser-tab") ||
+                (n.localName === "tab" && n.classList?.contains("tabbrowser-tab"));
+        }
+
+        // One pass over one composedPath, classifying as it goes. This runs on every dragover,
+        // which Gecko fires per mouse move — the previous shape walked the path three times and
+        // then re-walked the ancestors again with closest() as a fallback that, since
+        // composedPath already contains every ancestor, could not match anything new.
+        _classifyDropTarget(e) {
+            let tab = null;
+            let overTabChrome = false;
+            let overBrowser = false;
+
+            for (const n of this._eventPath(e)) {
+                if (!n || n.nodeType !== 1) continue;
+
+                if (this._isTabNode(n)) {
+                    tab = n;
+                    break;
+                }
+                if (n.hasAttribute?.("zen-essential") ||
+                    n.id === "tabbrowser-tabs" || n.id === "TabsToolbar" ||
+                    n.id === "navigator-toolbox" ||
+                    n.id === "vertical-pinned-tabs-container" || n.id === "pinned-tabs-container") {
+                    overTabChrome = true;
+                    break;
+                }
+                if (n.id === "tabbrowser-tabpanels" || n.id === "tabbrowser-tabbox" ||
+                    n.id === "zen-tabbox-wrapper" || n.localName === "browser" ||
+                    n.classList?.contains("browserSidebarContainer")) {
+                    overBrowser = true;
+                    break;
+                }
+            }
+
+            return { tab, overTabChrome, overBrowser };
+        }
+
+        _shouldRejectMediaDrop(e) {
+            const { tab, overTabChrome, overBrowser } = this._classifyDropTarget(e);
+            if (tab) return !this._isAllowedMediaDropTab(tab);
+            if (overTabChrome) return true;
+            if (overBrowser) return !this._isAllowedMediaDropTab(window.gBrowser?.selectedTab);
+            return false;
+        }
+
+        _rejectMediaDrop(e) {
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+            e.preventDefault();
+            e.stopImmediatePropagation();
+        }
+
+        _onDragCancelEvent(e) {
+            if ((e.type === "drop" || e.type === "dragover") && this._isCancelLatchLive()) {
+                this._rejectMediaDrop(e);
+                return;
+            }
+            if (!document.documentElement.hasAttribute("zen-library-dragging")) return;
+
+            if (e.type === "dragover" && this._shouldRejectMediaDrop(e)) {
+                this._rejectMediaDrop(e);
+                return;
+            }
+            if (e.type === "drop" && this._shouldRejectMediaDrop(e)) {
+                this._rejectMediaDrop(e);
+                this._cancelActiveDrag();
+                return;
+            }
+
+            if (e.type !== "contextmenu" && e.button !== 2 && !(e.buttons & 2)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this._cancelActiveDrag();
+        }
+
+        _cancelActiveDrag() {
+            if (this._dragWasCancelled) return;
+            this._dragWasCancelled = true;
+            this._dragCancelledAt = Date.now();
+            // dragend runs inside endDragSession and would drop the drag listeners
+            // before the easel's contextmenu arrives — keep a separate suppress.
+            this._armContextMenuSuppress();
+            document.documentElement.removeAttribute("zen-library-dragging");
+            this._container?.querySelectorAll(".media-card.dragging").forEach(c => {
+                c.classList.remove("dragging");
+            });
+            try {
+                const dragService = Cc["@mozilla.org/widget/dragservice;1"].getService(Ci.nsIDragService);
+                let session = null;
+                try {
+                    session = dragService.getCurrentSession(window);
+                } catch (_) {
+                    try { session = dragService.getCurrentSession(); } catch (_) {}
+                }
+                if (session) {
+                    // endDragSession(false) means "left the window", not cancel — that
+                    // still lets the easel receive the drop. Mark the user cancel, clear
+                    // the effect, then end the session as finished.
+                    //
+                    // userCancelled is a boolean attribute on nsIDragSession, not a method, so
+                    // the previous `typeof === "function"` guard was never true and this step
+                    // silently never ran.
+                    try { session.userCancelled = true; } catch (_) {}
+                    try { session.canDrop = false; } catch (_) {}
+                    try { session.dragAction = Ci.nsIDragService.DRAGDROP_ACTION_NONE; } catch (_) {}
+                    try {
+                        if (session.dataTransfer) session.dataTransfer.dropEffect = "none";
+                    } catch (_) {}
+                    if (typeof session.endDragSession === "function") {
+                        session.endDragSession(true);
+                    } else if (typeof dragService.endDragSession === "function") {
+                        dragService.endDragSession(true);
+                    }
+                }
+            } catch (err) {
+                console.warn("[ZenLibrary Media] Failed to cancel drag:", err);
+            }
+        }
+
+        _ensureContextMenu() {
+            if (document.getElementById("zen-media-context-menu")) return;
+            const popup = document.createXULElement("menupopup");
+            popup.id = "zen-media-context-menu";
+
+            const copyItem = document.createXULElement("menuitem");
+            copyItem.id = "zen-media-ctx-copy";
+            copyItem.setAttribute("label", "Copy file");
+
+            const showItem = document.createXULElement("menuitem");
+            showItem.id = "zen-media-ctx-show";
+            showItem.setAttribute("label", "Show in folder");
+
+            const renameItem = document.createXULElement("menuitem");
+            renameItem.id = "zen-media-ctx-rename";
+            renameItem.setAttribute("label", "Rename file");
+
+            const deleteItem = document.createXULElement("menuitem");
+            deleteItem.id = "zen-media-ctx-delete";
+            deleteItem.setAttribute("label", "Delete file");
+
+            popup.appendChild(copyItem);
+            popup.appendChild(showItem);
+            popup.appendChild(document.createXULElement("menuseparator"));
+            popup.appendChild(renameItem);
+            popup.appendChild(deleteItem);
+            (document.getElementById("mainPopupSet") || document.body).appendChild(popup);
+        }
+
+        _showContextMenu(e, item) {
+            this._ensureContextMenu();
+            const popup = document.getElementById("zen-media-context-menu");
+
+            // Clone all items to rebind listeners
+            for (const id of ["zen-media-ctx-copy", "zen-media-ctx-show", "zen-media-ctx-rename", "zen-media-ctx-delete"]) {
+                const el = document.getElementById(id);
+                if (el) el.replaceWith(el.cloneNode(true));
+            }
+
+            document.getElementById("zen-media-ctx-copy").addEventListener("command", () => this.copyFile(item));
+
+            document.getElementById("zen-media-ctx-show").addEventListener("command", () => {
+                if (item.file && item.file.exists()) {
+                    try { item.file.reveal(); } catch (_) { item.file.parent.launch(); }
+                }
+            });
+
+            document.getElementById("zen-media-ctx-rename").addEventListener("command", () => {
+                if (!item.file || !item.file.exists()) return;
+                const input = { value: item.filename };
+                const ok = Services.prompt.prompt(window, "Rename File", null, input, null, { value: false });
+                if (!ok || !input.value.trim() || input.value.trim() === item.filename) return;
+                try {
+                    const newName = input.value.trim();
+                    item.file.moveTo(item.file.parent, newName);
+                    // Everything derived from the path follows it, or glance/drag/copy keep using the old file.
+                    const card = this._container?.querySelector(`.media-card[data-id="${CSS.escape(item.id)}"]`);
+                    item.filename = newName;
+                    item.targetPath = item.file.path;
+                    item.url = Services.io.newFileURI(item.file).spec;
+                    item.raw = { target: { path: item.file.path }, lastModified: item.timestamp };
+                    const oldId = item.id;
+                    item.id = `local_${item.file.path}_${item.timestamp}`;
+                    for (const cache of [this._coverCache, this._fileCache, this._aspectCache]) {
+                        if (cache.has(oldId)) { cache.set(item.id, cache.get(oldId)); cache.delete(oldId); }
+                    }
+                    if (this._playingId === oldId) this._playingId = item.id;
+                    if (this._renderedIds) this._renderedIds = this._renderedIds.map(id => id === oldId ? item.id : id);
+                    if (card) {
+                        card.dataset.id = item.id;
+                        card.querySelector(".media-card-name").textContent = newName;
+                        card.title = `${newName}\n(Right-click for options)`;
+                    }
+                } catch (err) {
+                    console.error("[ZenLibrary Media] Rename failed:", err);
+                }
+            });
+
+            document.getElementById("zen-media-ctx-delete").addEventListener("command", () => {
+                if (!item.file) return;
+                const confirmed = Services.prompt.confirm(window, "Delete File", `Delete "${item.filename}"? This cannot be undone.`);
+                if (!confirmed) return;
+                try {
+                    if (item.file.exists()) item.file.remove(false);
+                    const gone = (d) => d.id !== item.id;
+                    if (this._scanCache) this._scanCache = this._scanCache.filter(gone);
+                    if (this._listSource) this._listSource = this._listSource.filter(gone);
+                    if (this._renderedIds) this._renderedIds = this._renderedIds.filter(id => id !== item.id);
+                    this._itemCount = Math.max(0, (this._itemCount || 1) - 1);
+                    const card = this._container?.querySelector(`.media-card[data-id="${CSS.escape(item.id)}"]`);
+                    if (!card) return;
+                    const siblings = [...this._container.querySelectorAll(".media-card")].filter(n => n !== card);
+                    this._animateCardRemove(card, siblings).then(() => {
+                        if (this._container?.isConnected && !this._container.querySelector(".media-card")) {
+                            this.renderList(this._scanCache || []);
+                        }
+                    });
+                } catch (err) {
+                    console.error("[ZenLibrary Media] Delete failed:", err);
+                }
+            });
+
+            popup.openPopupAtScreen(e.screenX, e.screenY, true);
+        }
+
+        _stopCurrentAudio() {
+            if (this._currentAudio) {
+                this._currentAudio.onended = null;
+                this._currentAudio.onerror = null;
+                this._currentAudio.pause();
+                this._currentAudio.src = "";
+                this._currentAudio.load();
+                this._currentAudio = null;
+            }
+            if (this._playingId) {
+                const oldCard = this._container?.querySelector(`.media-card[data-id="${CSS.escape(this._playingId)}"]`);
+                if (oldCard) {
+                    oldCard.classList.remove("playing");
+                    const progress = oldCard.querySelector(".progress-bar-fill");
+                    if (progress) progress.style.width = "0%";
+                }
+            }
+            this._playingId = null;
+        }
+
+        toggleAudio(item, cardEl) {
+            const fileUrl = item.url;
+            if (this._playingId === item.id) {
+                this._stopCurrentAudio();
+                return;
+            }
+            this._stopCurrentAudio();
+            this._playingId = item.id;
+            this._currentAudio = new Audio(fileUrl);
+
+            this._currentAudio.onended = () => {
+                this._stopCurrentAudio();
+            };
+
+            this._currentAudio.ontimeupdate = () => {
+                if (this._playingId === item.id && this._currentAudio.duration) {
+                    const percent = (this._currentAudio.currentTime / this._currentAudio.duration) * 100;
+                    const progress = cardEl.querySelector(".progress-bar-fill");
+                    if (progress) progress.style.width = `${percent}%`;
+                }
+            };
+
+            this._currentAudio.onerror = (e) => {
+                console.error("Audio playback error", e);
+                this._stopCurrentAudio();
+            };
+
+            this._currentAudio.play().then(() => {
+                if (this._playingId === item.id) {
+                    cardEl.classList.add("playing");
+                } else {
+                    this._stopCurrentAudio();
+                }
+            }).catch(e => {
+                console.error("Play request failed", e);
+                this._stopCurrentAudio();
+            });
+        }
+
+        async showGlance(item, event) {
+            const mgr = window.gZenGlanceManager;
+            const card = event.currentTarget;
+            if (!mgr || !card) return;
+            // openGlance returns the open glance while one exists and closeGlance animates, so wait for it or the click is lost.
+            try { await mgr.closeGlance?.(); } catch (e) { }
+            if (!card.isConnected || this.library?.activeTab !== "media") return;
+
+            const rect = card.getBoundingClientRect();
+            const panels = window.windowUtils.getBoundsWithoutFlushing(window.gBrowser.tabpanels);
+            // Glance origins are relative to #tabbrowser-tabpanels; animator.css translates the overlay back by the content shift, so remove that from the panel's left too.
+            const wrapperTransform = getComputedStyle(document.getElementById("zen-appcontent-wrapper")).transform;
+            const shift = wrapperTransform === "none" ? 0 : new DOMMatrix(wrapperTransform).m41;
+            // openGlance refuses a load without a principal that may load the URL; file: needs the system one.
+            mgr.openGlance({
+                url: item.url,
+                clientX: rect.left - (panels.left - shift),
+                clientY: rect.top - panels.top,
+                width: rect.width,
+                height: rect.height,
+                triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
+            });
+        }
+
+        formatBytes(bytes) {
+            try {
+                if (window.ZenLibraryUtil?.formatBytes) return window.ZenLibraryUtil.formatBytes(bytes);
+            } catch (e) { }
+            const n = Number(bytes) || 0;
+            if (n <= 0) return "0 Bytes";
+            const units = ["Bytes", "KB", "MB", "GB", "TB"];
+            const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+            return `${parseFloat((n / Math.pow(1024, i)).toFixed(1))} ${units[i]}`;
+        }
+
+        // [audit] LEAK-1 — every cover-art blob: URL and cached Gecko File is released here; without it they were pinned for the window's lifetime.
+        destroy() {
+            this._destroyed = true;
+            try { this._stopCurrentAudio(); } catch (e) { }
+            this._disarmDragCancel();
+            this._disarmContextMenuSuppress();
+            document.documentElement.removeAttribute("zen-library-dragging");
+            this._cancelProgress();
+            clearInterval(this._watchTimer);
+            this._watchTimer = 0;
+            this._searchDebounce?.cancel();
+            this._searchDebounce = null;
+            this._roots = null;
+            this._clearCoverJobs();
+            this._disconnectLazyObservers();
+            try { if (this._downloadsView) this._downloadsList?.removeView(this._downloadsView); } catch (e) { }
+            this._downloadsView = null;
+            this._downloadsList = null;
+            this._dirMtimes.clear();
+            // Lives in mainPopupSet, outside anything the panel tears down itself.
+            document.getElementById("zen-media-context-menu")?.remove();
+
+            for (const url of this._objectUrls) {
+                try { URL.revokeObjectURL(url); } catch (e) { }
+            }
+            this._objectUrls.clear();
+
+            this._coverCache.clear();
+            this._fileCache.clear();
+            this._aspectCache.clear();
+            this._scanCache = null;
+            this._scanPromise = null;
+            this._listSource = null;
+            this._renderedIds = null;
+            this._renderToken++;
+            this._container = null;
+        }
+    }
+
+    window.ZenLibraryMedia = ZenLibraryMedia;
+
+    /* ------------------------------------------------- native section wiring */
+
+    class ZenLibraryMediaSectionElement extends HTMLElement {
+        constructor() {
+            super();
+            this._mounted = false;
+            this._library = null;
+        }
+        set library(value) { this._library = value; }
+        get library() { return this._library; }
+        connectedCallback() {
+            if (this._mounted) return;
+            this._mounted = true;
+            try { this.classList.add("zen-library-section"); } catch (e) { }
+            try { this.dataset.section = "media"; } catch (e) { }
+            const integration = window.gZenLibraryBookmarksIntegration;
+            const module = integration?._ensureMediaModule?.();
+            if (!module) {
+                this.replaceChildren(document.createTextNode("Media unavailable"));
+                return;
+            }
+            try {
+                module.library = integration._nativeModuleShell(this);
+                this.replaceChildren();
+                let header = null;
+                try { header = module.renderHeaderControls(); }
+                catch (e) { console.error("[LibraryTweaks] media header failed:", e); }
+                if (header) this.appendChild(header);
+                let body = null;
+                try { body = module.render(); }
+                catch (e) { console.error("[LibraryTweaks] media grid failed:", e); }
+                if (body) this.appendChild(body);
+            } catch (e) {
+                console.error("[LibraryTweaks] media native mount failed:", e);
+            }
+        }
+        disconnectedCallback() {
+            // Matches the reference behavior of stopping playback when leaving.
+            try {
+                window.gZenLibraryBookmarksIntegration?._mediaModule?._stopCurrentAudio?.();
+            } catch (e) { }
+        }
+    }
+
+    if (!customElements.get("zen-library-media-section")) {
+        try {
+            customElements.define("zen-library-media-section", ZenLibraryMediaSectionElement);
+        } catch (e) {
+            console.error("[LibraryTweaks] failed to define media section element:", e);
+        }
+    }
+
+    class ZenLibraryMediaSection {
+        static render(library) {
+            let html = null;
+            try { html = window.gZenLibraryBookmarksIntegration?._nativeHtml?.(); } catch (e) { }
+            if (html) {
+                return html`<zen-library-media-section class="zen-library-section" data-section="media" .library=${library}></zen-library-media-section>`;
+            }
+            const el = document.createElement("zen-library-media-section");
+            try { el.library = library; } catch (e) { }
+            return el;
+        }
+    }
+    ZenLibraryMediaSection.id = "media";
+    // No upstream Fluent string exists; the sidebar label is patched to text.
+    ZenLibraryMediaSection.label = "library-media-section-title";
+    window.ZenLibraryMediaSection = ZenLibraryMediaSection;
+
+    /* --------------------------------------- integration feature mixin */
+
+    const MEDIA_PREF = "zen.media.enabled";
+
+    const MediaIntegration = {
+        _isMediaEnabled() {
+            try {
+                return Services.prefs.getBoolPref(MEDIA_PREF, true);
+            } catch (e) {
+                return true;
+            }
+        },
+
+        _watchMediaPref() {
+            if (this._mediaPrefObserver) return;
+            this._mediaPrefObserver = {
+                observe: () => this._onMediaPrefChanged(),
+            };
+            try {
+                Services.prefs.addObserver(MEDIA_PREF, this._mediaPrefObserver);
+            } catch (e) {
+                this._mediaPrefObserver = null;
+            }
+        },
+
+        _unwatchMediaPref() {
+            if (!this._mediaPrefObserver) return;
+            try { Services.prefs.removeObserver(MEDIA_PREF, this._mediaPrefObserver); } catch (e) { }
+            this._mediaPrefObserver = null;
+        },
+
+        _mediaInit() {
+            try { this._watchMediaPref(); } catch (e) { }
+            if (!this._isMediaEnabled()) return;
+            if (!this._initialized) {
+                try { this.init(); } catch (e) { }
+                return;
+            }
+            try { this._registerNativeWhenReady(); } catch (e) { }
+            try { this._connectExistingNativeLibraries(); } catch (e) { }
+        },
+
+        _onMediaPrefChanged() {
+            if (this._isMediaEnabled()) {
+                if (!this._initialized) {
+                    try { this.init(); } catch (e) { }
+                    return;
+                }
+                try { this._registerNativeWhenReady(); } catch (e) { }
+                try { this._connectExistingNativeLibraries(); } catch (e) { }
+                return;
+            }
+            try { this._mediaUnregister(); } catch (e) { }
+            if (!this._anyFeatureEnabled?.()) {
+                try { this._unregisterAllSections(); } catch (e) { }
+                try { this._shutdown(); } catch (e) { }
+            }
+        },
+
+        _ensureMediaModule() {
+            if (this._mediaModule) return this._mediaModule;
+            try {
+                this._mediaModule = new ZenLibraryMedia(this._moduleShell());
+                try {
+                    const warming = this._mediaModule.init?.();
+                    warming?.catch?.(() => { });
+                } catch (e) { }
+            } catch (e) {
+                console.error("[LibraryTweaks] failed to initialize media module:", e);
+            }
+            return this._mediaModule;
+        },
+
+        _mediaRegister(host) {
+            if (!host || !this._isMediaEnabled?.()) return false;
+            if (!customElements.get("zen-library-media-section")) return false;
+            const sections = host.zenLibrarySections;
+            if (!sections || typeof sections !== "object") return false;
+            let changed = false;
+            if (sections.media !== window.ZenLibraryMediaSection) {
+                sections.media = window.ZenLibraryMediaSection;
+                changed = true;
+            }
+            try { if (this._sanitizeNativeTab?.(host)) changed = true; } catch (e) { }
+            try { this._mediaTabPatch(host); } catch (e) { }
+            try {
+                const root = this._nativeRoot?.(host);
+                if (root) this._ensureMediaStyles(root);
+            } catch (e) { }
+            if (changed) {
+                try { host.requestUpdate?.(); } catch (e) { }
+            }
+            return true;
+        },
+
+        _mediaUnregister() {
+            for (const host of Array.from(this._nativeHostObservers?.keys?.() || [])) {
+                try {
+                    const sections = host?.zenLibrarySections;
+                    if (sections?.media && sections.media === window.ZenLibraryMediaSection) {
+                        delete sections.media;
+                    }
+                    if (host?.activeTab === "media") host.activeTab = "history";
+                } catch (e) { }
+                try { host?.requestUpdate?.(); } catch (e) { }
+            }
+            try { this._mediaModule?.destroy?.(); } catch (e) { }
+            this._mediaModule = null;
+        },
+
+        // No upstream Fluent string and no shipped sprite asset: patch the label
+        // to text and inject the reference film-strip glyph.
+        _mediaTabPatch(host) {
+            let root = null;
+            try { root = this._nativeRoot?.(host); } catch (e) { }
+            const tab = root?.querySelector?.('.zen-library-tab[data-section="media"]');
+            if (!tab) return false;
+            const label = tab.querySelector?.("label");
+            if (!label) return false;
+            let touched = false;
+            if (label.textContent !== "Media") {
+                label.textContent = "Media";
+                touched = true;
+            }
+            if (label.hasAttribute("data-l10n-id")) {
+                label.removeAttribute("data-l10n-id");
+                touched = true;
+            }
+            const iconBox = tab.querySelector?.(".zen-library-tab-icon");
+            if (iconBox && !iconBox.querySelector(".zen-media-tab-icon")) {
+                const icon = this._mediaTabIcon();
+                if (icon) iconBox.replaceChildren(icon);
+            }
+            return touched;
+        },
+
+        _mediaTabIcon() {
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(this._mediaTabIconSvg(), "image/svg+xml");
+                const node = doc.documentElement;
+                if (!node || node.localName !== "svg") return null;
+                node.removeAttribute("xmlns");
+                return node;
+            } catch (e) {
+                return null;
+            }
+        },
+
+        _mediaTabIconSvg() {
+            return `<svg class="zen-media-tab-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 3L8 8M16 3L15 8M22 8H2M6.8 21H17.2C18.8802 21 19.7202 21 20.362 20.673C20.9265 20.3854 21.3854 19.9265 21.673 19.362C22 18.7202 22 17.8802 22 16.2V7.8C22 6.11984 22 5.27976 21.673 4.63803C21.3854 4.07354 20.9265 3.6146 20.362 3.32698C19.7202 3 18.8802 3 17.2 3H6.8C5.11984 3 4.27976 3 3.63803 3.32698C3.07354 3.6146 2.6146 4.07354 2.32698 4.63803C2 5.27976 2 6.11984 2 7.8V16.2C2 17.8802 2 18.7202 2.32698 19.362C2.6146 19.9265 3.07354 20.3854 3.63803 20.673C4.27976 21 5.11984 21 6.8 21Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+        },
+
+        _ensureMediaStyles(root) {
+            if (!root?.querySelector) return;
+            const css = `@import url("chrome://sine/content/library-tweaks/features/media.css");`;
+            const existing = root.querySelector(":scope > #zen-media-native-style") ||
+                root.querySelector("#zen-media-native-style");
+            if (existing) {
+                if (existing.textContent !== css) existing.textContent = css;
+                return;
+            }
+            const style = document.createElement("style");
+            style.id = "zen-media-native-style";
+            style.textContent = css;
+            try { root.appendChild(style); } catch (e) { }
+        },
+    };
+
+    // Global attach so a saves-only Sine reload (which rebuilds the integration
+    // without re-running this file) still picks the media half back up.
+    window._libraryTweaksAttachMedia = (integration) => {
+        if (!integration) return;
+        Object.assign(integration, MediaIntegration);
+        try { integration._mediaInit?.(); } catch (e) { }
+    };
+
+    try {
+        window._libraryTweaksAttachMedia(window.gZenLibraryBookmarksIntegration);
+    } catch (e) { }
+})();

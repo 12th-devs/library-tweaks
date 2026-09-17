@@ -28,6 +28,18 @@ needed — and turning it back on re-registers everything the same way.
 - Opening a board closes the Library, like the other sections.
 - Without the zen-easel mod installed the section shows an empty state instead.
 
+### Media section — `zen.media.enabled`
+
+- Gathers images, video and audio from your Downloads folder, Zen Easel
+  captures, your Screenshots folder and optional extra folders
+  (`zen.library.media.user-dirs`, semicolon-separated absolute paths).
+- Masonry grid with type pills, location chips and search; video duration and
+  GIF badges; audio cover art with click-to-play and progress.
+- Cards drag to the filesystem, copy, rename (downloads) and delete;
+  right-click menu with open/show/hide options.
+- Newest download-history items paint first while the folder walk fills in the
+  rest behind them; the grid patches in place without losing scroll.
+
 ## Install
 
 Install as a Sine mod by copying this folder into your Zen profile `chrome/sine-mods` directory and enabling it in `mods.json`.

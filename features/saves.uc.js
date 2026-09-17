@@ -2848,10 +2848,10 @@
         _anyFeatureEnabled() {
             if (this._isMasterEnabled()) return true;
             try {
-                return typeof this._isEaselsEnabled === "function" && this._isEaselsEnabled();
-            } catch (e) {
-                return false;
-            }
+                if (typeof this._isEaselsEnabled === "function" && this._isEaselsEnabled()) return true;
+                if (typeof this._isMediaEnabled === "function" && this._isMediaEnabled()) return true;
+            } catch (e) { }
+            return false;
         }
 
         _isMasterEnabled() {
@@ -2913,6 +2913,7 @@
         _unregisterAllSections() {
             this._unregisterSavesSections();
             try { this._easelsUnregister?.(); } catch (e) { }
+            try { this._mediaUnregister?.(); } catch (e) { }
         }
 
         _unregisterSavesSections() {
@@ -2965,6 +2966,7 @@
             }
             this._registerNativeWhenReady();
             try { this._easelsInit?.(); } catch (e) { }
+            try { this._mediaInit?.(); } catch (e) { }
         }
 
         // Fallback registration for the NL urlbar provider: Sine imports
@@ -3210,6 +3212,7 @@
         _registerNativeSections(host) {
             try { this._registerNativeSectionObject(host); } catch (e) { }
             try { this._easelsRegister?.(host); } catch (e) { }
+            try { this._mediaRegister?.(host); } catch (e) { }
         }
 
         _registerNativeSectionObject(host) {
@@ -3797,6 +3800,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
                 for (const [key, value] of Object.entries(props || {})) {
                     if (key === "className") node.className = value;
                     else if (key === "textContent") node.textContent = value;
+                    else if (key === "innerHTML") node.innerHTML = value;
                     else if (key === "style") node.setAttribute("style", value);
                     else if (key === "dataset" && value && typeof value === "object") {
                         for (const [dataKey, dataValue] of Object.entries(value)) {
@@ -3986,6 +3990,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             this._shutdown();
             this._unwatchMasterPref();
             try { this._unwatchEaselsPref?.(); } catch (e) { }
+            try { this._unwatchMediaPref?.(); } catch (e) { }
         }
 
         // Full teardown minus the master pref watcher, so the toggle-off path
@@ -4028,7 +4033,8 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         window.gZenLibraryBookmarksIntegration.destroy();
     }
     window.gZenLibraryBookmarksIntegration = new ZenLibraryBookmarksIntegration();
-    // Picks the easels half back up when it loaded earlier (normal boot) without
-    // depending on script load order.
+    // Picks the feature halves back up when they loaded earlier (normal boot)
+    // without depending on script load order.
     try { window._libraryTweaksAttachEasels?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
+    try { window._libraryTweaksAttachMedia?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
 })();

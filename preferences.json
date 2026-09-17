@@ -39,5 +39,17 @@
     "label": "Lists the boards stored by the zen-easel mod in the native Zen Library, with search, open, rename and delete. Requires the zen-easel mod; without it the section shows an empty state. Toggling applies immediately, no restart needed.",
     "size": "12px",
     "margin": "0 0 8px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.media.enabled",
+    "label": "Media section",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Gathers images, video and audio from your Downloads folder, Zen Easel captures, Screenshots and optional extra folders (zen.library.media.user-dirs, semicolon-separated) into a masonry grid with type/location filters, previews and audio playback. Toggling applies immediately, no restart needed.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
   }
 ]

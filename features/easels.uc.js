@@ -143,10 +143,7 @@
             grid.replaceChildren();
 
             if (!this._store()) {
-                grid.appendChild(this._empty(
-                    "Zen Easel is not installed",
-                    "Install and enable the zen-easel mod to keep boards here."
-                ));
+                grid.appendChild(this._easelInstallCard());
                 return;
             }
 
@@ -206,7 +203,7 @@
 
         _card(entry) {
             const mark = this.el("div", { className: "easel-card-mark" });
-            const squiggle = this.svg(`<svg class="easel-card-squiggle" viewBox="20 38 76 68" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M 79.08 42.08 C 91.19 54.79 88.45 58.62 81.98 56.04 C 75.51 53.47 66.12 44.54 59.62 47.55 C 53.12 50.56 91.47 84.24 77.76 86.61 C 72.57 87.51 43.87 53.27 34.03 56.04 C 23.75 58.94 58.53 84.24 60.64 100.31" stroke="currentColor" stroke-width="7.1" stroke-linecap="round" stroke-linejoin="round"/></svg>`);
+            const squiggle = this.svg(this._squiggleSvg());
             if (squiggle) mark.appendChild(squiggle);
 
             const fullTitle = entry.title || "Untitled Easel";
@@ -228,6 +225,133 @@
                     ])
                 ])
             ]);
+        }
+
+        _squiggleSvg() {
+            return `<svg class="easel-card-squiggle" viewBox="20 38 76 68" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M 79.08 42.08 C 91.19 54.79 88.45 58.62 81.98 56.04 C 75.51 53.47 66.12 44.54 59.62 47.55 C 53.12 50.56 91.47 84.24 77.76 86.61 C 72.57 87.51 43.87 53.27 34.03 56.04 C 23.75 58.94 58.53 84.24 60.64 100.31" stroke="currentColor" stroke-width="7.1" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+        }
+
+        /* ------------------------------------------- missing-easel install UI */
+
+        // Synchronous best-known state: store importable? host alive? folder present?
+        // Whether the present folder is enabled is resolved by just enabling it —
+        // flipping an already-enabled entry is harmless and the restart fixes a
+        // half-loaded host either way.
+        _easelInstallState() {
+            let host = null;
+            try { host = window.gZenEaselHost || null; } catch (e) { }
+            if (this._store()) {
+                return host ? "ready" : "needs-restart";
+            }
+            let folderExists = false;
+            try {
+                const dir = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+                dir.append(PathUtils.profileDir);
+                dir.appendRelativePath(PathUtils.join("chrome", "sine-mods", "zen-easel"));
+                folderExists = dir.exists() && dir.isDirectory();
+            } catch (e) { }
+            return folderExists ? "disabled" : "missing";
+        }
+
+        _easelInstallCard() {
+            const state = this._easelInstallState();
+            const card = this.el("div", { className: "empty-state easel-install" });
+            const mark = this.el("div", { className: "easel-install-mark" });
+            const squiggle = this.svg(this._squiggleSvg());
+            if (squiggle) mark.appendChild(squiggle);
+            card.appendChild(mark);
+
+            if (state === "needs-restart") {
+                card.appendChild(this.el("h3", { textContent: "Zen Easel needs a restart" }));
+                card.appendChild(this.el("p", { textContent: "Its files are here but its window scripts did not load. Restart Zen to finish enabling it." }));
+                card.appendChild(this.el("button", {
+                    className: "easel-install-button",
+                    type: "button",
+                    onclick: () => this._restartBrowser()
+                }, [this.el("span", { textContent: "Restart Zen" })]));
+                return card;
+            }
+
+            card.appendChild(this.el("h3", { textContent: "Boards live in Zen Easel" }));
+            if (state === "disabled") {
+                card.appendChild(this.el("p", { textContent: "The zen-easel mod is installed but not enabled. Enable it and restart to keep boards here." }));
+                card.appendChild(this.el("button", {
+                    className: "easel-install-button",
+                    type: "button",
+                    onclick: async () => {
+                        await this._enableEaselMod();
+                        this._restartBrowser();
+                    }
+                }, [this.el("span", { textContent: "Enable Zen Easel" })]));
+                card.appendChild(this.el("div", {
+                    className: "easel-install-note",
+                    textContent: "Zen will restart to load it."
+                }));
+                return card;
+            }
+
+            card.appendChild(this.el("p", { textContent: "Install the Zen Easel mod to capture, sketch and keep boards here." }));
+            card.appendChild(this.el("button", {
+                className: "easel-install-button",
+                type: "button",
+                onclick: () => {
+                    try { window.openTrustedLinkIn("https://sineorg.github.io/store", "tab"); } catch (e) { }
+                }
+            }, [this.el("span", { textContent: "Get Zen Easel" })]));
+            card.appendChild(this.el("div", {
+                className: "easel-install-note",
+                textContent: "Opens the Sine store — search for Zen Easel, then come back here."
+            }));
+            return card;
+        }
+
+        // Targeted mods.json surgery (brace-matched, so the file's single-line
+        // formatting is preserved) instead of a full JSON rewrite.
+        async _enableEaselMod() {
+            try {
+                const path = PathUtils.join(PathUtils.profileDir, "chrome", "sine-mods", "mods.json");
+                const raw = await IOUtils.readUTF8(path);
+                const key = '"zen-easel":';
+                const start = raw.indexOf(key);
+                if (start === -1) throw new Error("zen-easel entry not found");
+                let open = raw.indexOf("{", start);
+                let depth = 0;
+                let end = open;
+                let inStr = false;
+                let esc = false;
+                for (;;) {
+                    const ch = raw[end];
+                    if (inStr) {
+                        if (esc) esc = false;
+                        else if (ch === "\\") esc = true;
+                        else if (ch === '"') inStr = false;
+                    } else if (ch === '"') {
+                        inStr = true;
+                    } else if (ch === "{") {
+                        depth++;
+                    } else if (ch === "}") {
+                        depth--;
+                        if (depth === 0) break;
+                    }
+                    end++;
+                }
+                const entry = raw.slice(start, end + 1);
+                const flipped = entry.replace(/"enabled"\s*:\s*false/, '"enabled":true');
+                if (flipped === entry) return true;
+                await IOUtils.writeUTF8(path, raw.slice(0, start) + flipped + raw.slice(end + 1));
+                return true;
+            } catch (e) {
+                console.error("[LibraryTweaks] could not enable zen-easel:", e);
+                return false;
+            }
+        }
+
+        _restartBrowser() {
+            try {
+                Services.startup.quit(Ci.nsIAppStartup.eRestart | Ci.nsIAppStartup.eAttemptQuit);
+            } catch (e) {
+                try { Services.prompt.alert(window, "Restart needed", "Please restart Zen to apply the change."); } catch (x) { }
+            }
         }
 
         _empty(title, detail) {
@@ -838,6 +962,35 @@ zen-library-easels-section .empty-state p {
 }
 zen-library-easels-section .empty-state .empty-icon {
   display: none;
+}
+/* Missing-easel install card: hero squiggle, accent button, quiet note. */
+zen-library-easels-section .easel-install-mark {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 2px;
+  color: var(--zen-folder-stroke, var(--zen-primary-color, currentColor));
+  opacity: 0.9;
+}
+zen-library-easels-section .easel-install-button {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+  margin-top: 4px;
+  padding: 9px 18px;
+  border-radius: 12px;
+  background: var(--zen-primary-color, #0060df);
+  color: white;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+zen-library-easels-section .easel-install-button:hover {
+  filter: brightness(1.1);
+}
+zen-library-easels-section .easel-install-note {
+  font-size: 11px;
+  opacity: 0.55;
+  max-width: 230px;
 }
 /* Reference sidebar glyph: sprite box hidden, injected SVG in its place. The
    inner pane fills when selected, exactly like the reference section. */
