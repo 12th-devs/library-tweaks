@@ -529,6 +529,7 @@
             const container = this.el("div", { className: "media-grid" });
             wrapper.appendChild(container);
             this._container = container;
+            this._moreRetried = false;
             const token = ++this._renderToken;
             // Modules outlive a close/open cycle, so a limit paged up in a previous
             // session would otherwise render every card the user ever scrolled to.
@@ -1513,13 +1514,30 @@
             this._moreObserver?.disconnect();
             this._moreObserver = new IntersectionObserver((entries) => {
                 if (!entries.some(entry => entry.isIntersecting)) return;
-                // If the grid is laid out but cannot scroll, everything already
-                // fits: paging +36/card-batch per fire would re-trigger forever
-                // on an always-visible sentinel. Render the rest once and stop.
-                // (Pre-layout both heights are 0; that case keeps normal paging.)
                 const scroller = this._container;
-                if (scroller && scroller.clientHeight > 0 &&
-                    scroller.scrollHeight <= scroller.clientHeight + 4) {
+                if (!scroller) return;
+                // Zero-area grid (pre-layout, or an ancestry that never bounds
+                // it): the sentinel intersects constantly here, and paging on
+                // every notification would walk the whole library unprompted —
+                // each step re-measuring previews until the tab freezes. Back
+                // off instead; one delayed retry covers slow layout.
+                if (scroller.clientHeight <= 0) {
+                    this._moreObserver?.disconnect();
+                    this._moreObserver = null;
+                    sentinel.remove();
+                    if (!this._moreRetried) {
+                        this._moreRetried = true;
+                        window.setTimeout(() => {
+                            if (this._destroyed) return;
+                            try { this._ensureLoadMore(); } catch (e) { }
+                        }, 1000);
+                    }
+                    return;
+                }
+                // Laid out but nothing to scroll: everything already fits, so
+                // render the rest once and stop instead of paging forever on an
+                // always-visible sentinel.
+                if (scroller.scrollHeight <= scroller.clientHeight + 4) {
                     this._moreObserver?.disconnect();
                     this._moreObserver = null;
                     sentinel.remove();

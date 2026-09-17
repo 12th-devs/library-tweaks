@@ -175,7 +175,9 @@ zen-library-media-section .zen-library-search-top[open] + .library-list-wrapper 
 zen-library-media-section .media-grid {
     position: static;
     flex: 1;
-    min-height: 0;
+    /* Fallback box when the ancestry never bounds the grid: without some
+       height the load-more sentinel intersects constantly. */
+    min-height: 200px;
     display: block;
     padding: 12px 16px;
     box-sizing: border-box;
