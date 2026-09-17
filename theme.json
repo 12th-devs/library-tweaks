@@ -3,7 +3,7 @@
   "homepage": "https://github.com/12th-devs/library-tweaks",
   "author": "Codex",
   "name": "Library Tweaks",
-  "description": "Small tweaks for the native Zen Library. Currently adds a Saves (bookmarks) section with smart saving, filtering and urlbar search.",
+  "description": "Small tweaks for the native Zen Library. Currently adds Saves (bookmarks) and Easels sections with smart saving, filtering and urlbar search.",
   "version": "1.0.0",
   "createdAt": "2026-09-17",
   "updatedAt": "2026-09-17",
@@ -19,6 +19,12 @@
       "description": "Saves (bookmarks) section for the native Zen Library.",
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 20
+    },
+    "features/easels.uc.js": {
+      "name": "Library Tweaks - Easels",
+      "description": "Easels section for the native Zen Library.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 21
     }
   },
   "tags": [

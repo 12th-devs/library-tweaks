@@ -20,6 +20,14 @@ Turning the toggle off unregisters the Saves section, the `Ctrl+D` smart save,
 the bookmark shortcuts and the tab-drop handling immediately — no restart
 needed — and turning it back on re-registers everything the same way.
 
+### Easels section — `zen.easels.enabled`
+
+- Lists the boards stored by the zen-easel mod in the native Zen Library.
+- Search filters the grid in place; the "+" card creates and opens a board.
+- Right-click a card for Open, Rename and Delete (delete animates out).
+- Opening a board closes the Library, like the other sections.
+- Without the zen-easel mod installed the section shows an empty state instead.
+
 ## Install
 
 Install as a Sine mod by copying this folder into your Zen profile `chrome/sine-mods` directory and enabling it in `mods.json`.

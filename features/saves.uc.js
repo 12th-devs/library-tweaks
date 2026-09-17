@@ -2836,11 +2836,22 @@
             this._onUnload = this._onUnload.bind(this);
             this._onLibraryReady = this._registerWhenReady.bind(this);
             this._watchMasterPref();
-            if (!this._isMasterEnabled()) {
-                this._debug("master toggle off; integration dormant");
+            if (!this._anyFeatureEnabled()) {
+                this._debug("all features off; integration dormant");
                 return;
             }
             this.init();
+        }
+
+        // True when at least one Library Tweaks feature wants to run. The easels
+        // half arrives via a later script, so its check is optional-chained.
+        _anyFeatureEnabled() {
+            if (this._isMasterEnabled()) return true;
+            try {
+                return typeof this._isEaselsEnabled === "function" && this._isEaselsEnabled();
+            } catch (e) {
+                return false;
+            }
         }
 
         _isMasterEnabled() {
@@ -2876,18 +2887,35 @@
 
         _onMasterPrefChanged() {
             if (this._isMasterEnabled()) {
-                this._debug("master toggle on");
-                if (!this._initialized) this.init();
+                this._debug("saves toggle on");
+                if (!this._initialized) {
+                    this.init();
+                    return;
+                }
+                this._registerWhenReady();
+                this._watchAddBookmarkCommands();
+                this._ensureUrlbarProvider();
+                for (const host of Array.from(this._nativeHostObservers.keys())) {
+                    try { this._registerNativeSections(host); } catch (e) { }
+                }
                 return;
             }
-            this._debug("master toggle off; tearing down");
-            this._unregisterAllSections();
-            this._shutdown();
+            this._debug("saves toggle off; unregistering saves");
+            this._unregisterSavesSections();
+            if (!this._anyFeatureEnabled()) {
+                this._unregisterAllSections();
+                this._shutdown();
+            }
         }
 
-        // Removes our tabs from both libraries without dropping the master
-        // pref watcher, so re-enabling re-registers from a clean slate.
+        // Removes our tabs from both libraries without dropping the pref watchers,
+        // so re-enabling re-registers from a clean slate.
         _unregisterAllSections() {
+            this._unregisterSavesSections();
+            try { this._easelsUnregister?.(); } catch (e) { }
+        }
+
+        _unregisterSavesSections() {
             try {
                 if (this._registered) {
                     window.ZenLibrarySections?.unregister?.("bookmarks");
@@ -2930,10 +2958,13 @@
             this._watchShowAllBookmarksCommand();
             this._watchNativeLibraryCommandNodes();
             this._watchBookmarksSidebar();
-            this._registerWhenReady();
+            if (this._isMasterEnabled()) {
+                this._registerWhenReady();
+                this._watchAddBookmarkCommands();
+                this._ensureUrlbarProvider();
+            }
             this._registerNativeWhenReady();
-            this._watchAddBookmarkCommands();
-            this._ensureUrlbarProvider();
+            try { this._easelsInit?.(); } catch (e) { }
         }
 
         // Fallback registration for the NL urlbar provider: Sine imports
@@ -2978,7 +3009,7 @@
         }
 
         _registerNativeWhenReady() {
-            if (!this._isMasterEnabled()) return false;
+            if (!this._anyFeatureEnabled()) return false;
             if (this._nativeReady) {
                 this._debug("native library already ready");
                 return true;
@@ -3032,13 +3063,13 @@
             if (!host || this._nativeHostObservers.has(host)) {
                 if (host) {
                     this._debug("sync existing native host", this._describeNativeHost(host));
-                    this._registerNativeSectionObject(host);
+                    this._registerNativeSections(host);
                     this._syncNativeLibrary(host);
                 }
                 return;
             }
             this._debug("connect native host", this._describeNativeHost(host));
-            this._registerNativeSectionObject(host);
+            this._registerNativeSections(host);
             const sync = () => this._syncNativeLibrary(host);
             const observer = new MutationObserver(() => {
                 if (host._zenBookmarksSyncPending) return;
@@ -3174,6 +3205,13 @@
             return ZenLibraryBookmarksSection;
         }
 
+        // Registers every enabled feature section on a native host. Per-feature
+        // methods are optional-chained: the easels half loads in a later script.
+        _registerNativeSections(host) {
+            try { this._registerNativeSectionObject(host); } catch (e) { }
+            try { this._easelsRegister?.(host); } catch (e) { }
+        }
+
         _registerNativeSectionObject(host) {
             if (!this._isMasterEnabled()) return false;
             if (!host) return false;
@@ -3293,7 +3331,7 @@
                 Ctor.getInstance = function (...args) {
                     const instance = origGetInstance.apply(this, args);
                     try {
-                        integration._registerNativeSectionObject(instance);
+                        integration._registerNativeSections(instance);
                         try {
                             const want = Services.prefs.getStringPref("zen.library.last-tab", "");
                             if (want && want !== instance.activeTab &&
@@ -3338,7 +3376,7 @@
         // subsequent update.
         _syncNativeLibrary(host) {
             if (!host?.isConnected) return;
-            this._registerNativeSectionObject(host);
+            this._registerNativeSections(host);
             const root = this._nativeRoot(host);
             if (root) this._ensureNativeStyles(root);
         }
@@ -3549,11 +3587,34 @@ zen-library-bookmarks-section .empty-state .empty-icon {
 
         _nativeModuleShell(sectionEl) {
             const base = this._moduleShell();
+            const hostFor = () => {
+                try { return sectionEl?.closest?.("zen-library") || null; }
+                catch (e) { return null; }
+            };
             return {
                 ...base,
                 style: sectionEl?.style || base.style,
                 store: base.store || null,
                 enterContent: (node) => node,
+                get activeTab() {
+                    try { return hostFor()?.activeTab; }
+                    catch (e) { return undefined; }
+                },
+                update: () => {
+                    try { hostFor()?.requestUpdate?.(); } catch (e) { }
+                },
+                svg: (svgString) => {
+                    try {
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(svgString, "image/svg+xml");
+                        const node = doc.documentElement;
+                        if (!node) return null;
+                        node.removeAttribute("xmlns");
+                        return node;
+                    } catch (e) {
+                        return null;
+                    }
+                },
             };
         }
 
@@ -3620,7 +3681,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
                         const existing = typeof Ctor.getInstance === "function"
                             ? Ctor.getInstance(false)
                             : document.querySelector("zen-library");
-                        if (existing) this._registerNativeSectionObject(existing);
+                        if (existing) this._registerNativeSections(existing);
                     } catch (e) { }
                     Ctor.toggle("bookmarks");
                     return true;
@@ -3737,6 +3798,11 @@ zen-library-bookmarks-section .empty-state .empty-icon {
                     if (key === "className") node.className = value;
                     else if (key === "textContent") node.textContent = value;
                     else if (key === "style") node.setAttribute("style", value);
+                    else if (key === "dataset" && value && typeof value === "object") {
+                        for (const [dataKey, dataValue] of Object.entries(value)) {
+                            try { node.dataset[dataKey] = dataValue; } catch (e) { }
+                        }
+                    }
                     else if (key.startsWith("on") && typeof value === "function") {
                         node.addEventListener(key.slice(2), value);
                     } else if (value !== false && value != null) {
@@ -3919,6 +3985,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         destroy() {
             this._shutdown();
             this._unwatchMasterPref();
+            try { this._unwatchEaselsPref?.(); } catch (e) { }
         }
 
         // Full teardown minus the master pref watcher, so the toggle-off path
@@ -3961,4 +4028,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         window.gZenLibraryBookmarksIntegration.destroy();
     }
     window.gZenLibraryBookmarksIntegration = new ZenLibraryBookmarksIntegration();
+    // Picks the easels half back up when it loaded earlier (normal boot) without
+    // depending on script load order.
+    try { window._libraryTweaksAttachEasels?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
 })();

@@ -24,7 +24,19 @@
   },
   {
     "type": "text",
-    "label": "Adds a Saves section to the native Zen Library, plus smart Ctrl+D saving, bookmark shortcuts and tab-drop handling. Turning it off unregisters everything and restores native behavior immediately, no restart needed (the urlbar provider, once loaded, stays until restart).",
+    "label": "Turning it off unregisters everything and restores native behavior immediately, no restart needed (the urlbar provider, once loaded, stays until restart).",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.easels.enabled",
+    "label": "Easels section",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Lists the boards stored by the zen-easel mod in the native Zen Library, with search, open, rename and delete. Requires the zen-easel mod; without it the section shows an empty state. Toggling applies immediately, no restart needed.",
     "size": "12px",
     "margin": "0 0 8px 0"
   }
