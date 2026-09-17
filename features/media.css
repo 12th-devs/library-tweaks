@@ -151,6 +151,11 @@ zen-library-media-section {
     flex-direction: column;
     flex: 1;
     min-height: 0;
+    /* Size from layout, never from contents: without this an uncooperative
+       ancestor flex chain lets the grid grow unbounded instead of scrolling,
+       which pins the load-more sentinel visible and pages the whole library
+       in a storm. */
+    contain: size;
 }
 
 zen-library-media-section .library-list-wrapper {

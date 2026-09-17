@@ -3654,6 +3654,9 @@ zen-library-bookmarks-section {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  /* Size from layout, never from contents, so the list below gets a bounded
+     box to scroll in. */
+  contain: size;
 }
 zen-library-bookmarks-section .library-list-container {
   flex: 1;

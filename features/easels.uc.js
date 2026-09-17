@@ -803,6 +803,9 @@ zen-library-easels-section {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  /* Size from layout, never from contents, so the grid below gets a bounded
+     box to scroll in. */
+  contain: size;
 }
 zen-library-easels-section .easel-card-grid {
   display: grid;

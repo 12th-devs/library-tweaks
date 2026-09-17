@@ -1513,6 +1513,23 @@
             this._moreObserver?.disconnect();
             this._moreObserver = new IntersectionObserver((entries) => {
                 if (!entries.some(entry => entry.isIntersecting)) return;
+                // If the grid is laid out but cannot scroll, everything already
+                // fits: paging +36/card-batch per fire would re-trigger forever
+                // on an always-visible sentinel. Render the rest once and stop.
+                // (Pre-layout both heights are 0; that case keeps normal paging.)
+                const scroller = this._container;
+                if (scroller && scroller.clientHeight > 0 &&
+                    scroller.scrollHeight <= scroller.clientHeight + 4) {
+                    this._moreObserver?.disconnect();
+                    this._moreObserver = null;
+                    sentinel.remove();
+                    this._visibleLimit = (this._listSource || []).length;
+                    requestAnimationFrame(async () => {
+                        await this._measurePreviews(this._listSource || []);
+                        this._renderIfChanged(this._listSource || []);
+                    });
+                    return;
+                }
                 this._moreObserver?.disconnect();
                 this._moreObserver = null;
                 sentinel.remove();
