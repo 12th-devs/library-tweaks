@@ -181,16 +181,27 @@
         // The list is read asynchronously but render() is synchronous, so the first
         // paint after opening the section can be a frame behind. Re-render once the
         // fresh index lands rather than making the click wait on a file read.
+        // Consecutive forced laps are capped: a store that never settles must not
+        // spin Lit updates forever. The counter resets on any settled lap, so the
+        // ordinary case (settle on lap one) is unaffected.
         _scheduleRerender() {
             if (this._refreshing) return;
+            if ((this._rerenderLaps || 0) >= 10) return;
             this._refreshing = true;
             const before = this._signature();
 
             this.refresh()
                 .then(() => {
                     this._refreshing = false;
-                    if (this.library.activeTab !== "easels") return;
-                    if (this._signature() === before) return;
+                    if (this.library.activeTab !== "easels") {
+                        this._rerenderLaps = 0;
+                        return;
+                    }
+                    if (this._signature() === before) {
+                        this._rerenderLaps = 0;
+                        return;
+                    }
+                    this._rerenderLaps = (this._rerenderLaps || 0) + 1;
                     this.library.update(true);
                 })
                 .catch(() => { this._refreshing = false; });
@@ -557,6 +568,8 @@
             }
             try {
                 module.library = integration._nativeModuleShell(this);
+                // Fresh mount (not an update-driven re-render): new settling window.
+                module._rerenderLaps = 0;
                 this.replaceChildren();
                 let header = null;
                 try { header = module.renderHeaderControls(); }

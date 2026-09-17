@@ -3253,8 +3253,10 @@
         }
 
         // Native renders tabs in zenLibrarySections insertion order, so arranging
-        // is rebuilding the map: saved ids first, anything new appended. Unknown
-        // saved ids (a disabled feature) are skipped, never resurrected.
+        // is re-inserting the keys in order: saved ids first, anything new
+        // appended. Unknown saved ids (a disabled feature) are skipped, never
+        // resurrected. The map object itself is MUTATED, never replaced — native
+        // internals may hold the original reference.
         _applySidebarOrder(host) {
             const sections = host?.zenLibrarySections;
             if (!sections || typeof sections !== "object") return false;
@@ -3266,9 +3268,10 @@
                 ...current.filter(id => !saved.includes(id)),
             ];
             if (ordered.join("\n") === current.join("\n")) return false;
-            const rebuilt = {};
-            for (const id of ordered) rebuilt[id] = sections[id];
-            host.zenLibrarySections = rebuilt;
+            const refs = {};
+            for (const id of ordered) refs[id] = sections[id];
+            for (const id of current) delete sections[id];
+            for (const id of ordered) sections[id] = refs[id];
             return true;
         }
 
@@ -3281,9 +3284,10 @@
             if (index === -1) index = ids.length;
             else if (!before) index += 1;
             ids.splice(index, 0, draggedId);
-            const rebuilt = {};
-            for (const id of ids) rebuilt[id] = sections[id];
-            host.zenLibrarySections = rebuilt;
+            const refs = {};
+            for (const id of ids) refs[id] = sections[id];
+            for (const id of Object.keys(sections)) delete sections[id];
+            for (const id of ids) sections[id] = refs[id];
             this._saveSidebarOrder(ids);
             try { host.requestUpdate?.(); } catch (e) { }
             return true;
