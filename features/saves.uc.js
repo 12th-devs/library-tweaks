@@ -2948,13 +2948,13 @@
         }
 
         // TEMPORARY open-path tracing (freeze diagnosis): appends timestamped
-        // markers to a log file, plus a 1s heartbeat that proves whether the
-        // main thread is still turning. Read %TEMP%/lt-trace.log after a hang.
+        // markers to sine-mods/lt-trace.log, plus a 1s heartbeat that proves
+        // whether the main thread is still turning.
         _tracePath() {
             if (this._tracePathValue === undefined) {
                 try {
-                    const tmp = Services.dirsvc.get("TmpD", Ci.nsIFile);
-                    this._tracePathValue = PathUtils.join(tmp.path, "lt-trace.log");
+                    this._tracePathValue = PathUtils.join(
+                        PathUtils.profileDir, "chrome", "sine-mods", "lt-trace.log");
                 } catch (e) {
                     this._tracePathValue = null;
                 }
