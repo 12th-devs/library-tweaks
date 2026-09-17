@@ -3208,11 +3208,179 @@
         }
 
         // Registers every enabled feature section on a native host. Per-feature
-        // methods are optional-chained: the easels half loads in a later script.
+        // methods are optional-chained: the easels/media halves load later.
         _registerNativeSections(host) {
             try { this._registerNativeSectionObject(host); } catch (e) { }
             try { this._easelsRegister?.(host); } catch (e) { }
             try { this._mediaRegister?.(host); } catch (e) { }
+            try { if (this._applySidebarOrder(host)) host.requestUpdate?.(); } catch (e) { }
+        }
+
+        /* --------------------------------------- sidebar drag-to-reorder */
+
+        static SIDEBAR_REORDER_PREF = "zen.library.tweaks.sidebar.reorder";
+        static SIDEBAR_ORDER_PREF = "zen.library.tweaks.sidebar.order";
+
+        _isReorderEnabled() {
+            try {
+                return Services.prefs.getBoolPref(
+                    ZenLibraryBookmarksIntegration.SIDEBAR_REORDER_PREF, true);
+            } catch (e) {
+                return true;
+            }
+        }
+
+        _readSidebarOrder() {
+            try {
+                const raw = Services.prefs.getStringPref(
+                    ZenLibraryBookmarksIntegration.SIDEBAR_ORDER_PREF, "");
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) return null;
+                const ids = parsed.filter(id => typeof id === "string" && id);
+                return ids.length ? ids : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        _saveSidebarOrder(ids) {
+            try {
+                Services.prefs.setStringPref(
+                    ZenLibraryBookmarksIntegration.SIDEBAR_ORDER_PREF,
+                    JSON.stringify(ids));
+            } catch (e) { }
+        }
+
+        // Native renders tabs in zenLibrarySections insertion order, so arranging
+        // is rebuilding the map: saved ids first, anything new appended. Unknown
+        // saved ids (a disabled feature) are skipped, never resurrected.
+        _applySidebarOrder(host) {
+            const sections = host?.zenLibrarySections;
+            if (!sections || typeof sections !== "object") return false;
+            const saved = this._readSidebarOrder();
+            if (!saved?.length) return false;
+            const current = Object.keys(sections);
+            const ordered = [
+                ...saved.filter(id => id in sections),
+                ...current.filter(id => !saved.includes(id)),
+            ];
+            if (ordered.join("\n") === current.join("\n")) return false;
+            const rebuilt = {};
+            for (const id of ordered) rebuilt[id] = sections[id];
+            host.zenLibrarySections = rebuilt;
+            return true;
+        }
+
+        _moveSidebarSection(host, draggedId, targetId, before) {
+            const sections = host?.zenLibrarySections;
+            if (!sections || !sections[draggedId] || !sections[targetId]) return false;
+            if (draggedId === targetId) return false;
+            const ids = Object.keys(sections).filter(id => id !== draggedId);
+            let index = ids.indexOf(targetId);
+            if (index === -1) index = ids.length;
+            else if (!before) index += 1;
+            ids.splice(index, 0, draggedId);
+            const rebuilt = {};
+            for (const id of ids) rebuilt[id] = sections[id];
+            host.zenLibrarySections = rebuilt;
+            this._saveSidebarOrder(ids);
+            try { host.requestUpdate?.(); } catch (e) { }
+            return true;
+        }
+
+        _syncSidebarDnD(host) {
+            try { this._ensureSidebarDnD(host); } catch (e) { }
+            // Lit may recreate tabs and the pref may have flipped: keep flags true.
+            try {
+                const on = this._isReorderEnabled();
+                for (const tab of this._nativeRoot(host)?.querySelectorAll?.(".zen-library-tab") || []) {
+                    if (!!tab.draggable !== on) tab.draggable = on;
+                }
+            } catch (e) { }
+        }
+
+        _ensureSidebarDnD(host) {
+            if (!host || host._zenSidebarDndHook) return;
+            const root = this._nativeRoot(host);
+            const container = root?.querySelector?.("#zen-library-sidebar-tabs") ||
+                root?.querySelector?.(".zen-library-tab")?.parentNode || null;
+            if (!container) return;
+            host._zenSidebarDndHook = true;
+            const tabOf = (event) => {
+                try { return event.target?.closest?.(".zen-library-tab") || null; }
+                catch (e) { return null; }
+            };
+            const clearIndicators = () => {
+                try {
+                    for (const t of container.querySelectorAll(
+                        ".zen-library-tab[drop-before], .zen-library-tab[drop-after], .zen-library-tab[dragging-tab]"
+                    )) {
+                        t.removeAttribute("drop-before");
+                        t.removeAttribute("drop-after");
+                        t.removeAttribute("dragging-tab");
+                    }
+                } catch (e) { }
+                host._zenTabDropTarget = null;
+            };
+            container.addEventListener("dragstart", (event) => {
+                if (!this._isReorderEnabled()) return;
+                const id = tabOf(event)?.dataset?.section;
+                if (!id || !host.zenLibrarySections?.[id]) return;
+                host._zenTabDragId = id;
+                try {
+                    event.dataTransfer.setData("application/x-zen-library-tab", id);
+                    event.dataTransfer.effectAllowed = "move";
+                } catch (e) { }
+                try { tabOf(event)?.setAttribute?.("dragging-tab", ""); } catch (e) { }
+            });
+            container.addEventListener("dragover", (event) => {
+                if (!this._isReorderEnabled() || !host._zenTabDragId) return;
+                const tab = tabOf(event);
+                if (!tab) return;
+                event.preventDefault();
+                try { event.dataTransfer.dropEffect = "move"; } catch (e) { }
+                const targetId = tab.dataset?.section;
+                if (!targetId || targetId === host._zenTabDragId) {
+                    clearIndicators();
+                    return;
+                }
+                const rect = tab.getBoundingClientRect();
+                const before = event.clientY < rect.top + rect.height / 2;
+                clearIndicators();
+                try { tab.toggleAttribute(before ? "drop-before" : "drop-after", true); } catch (e) { }
+                host._zenTabDropTarget = { id: targetId, before };
+            });
+            container.addEventListener("dragleave", (event) => {
+                try {
+                    if (!container.contains(event.relatedTarget)) clearIndicators();
+                } catch (e) { }
+            });
+            container.addEventListener("drop", (event) => {
+                const dragId = host._zenTabDragId;
+                const target = host._zenTabDropTarget;
+                if (!this._isReorderEnabled() || !dragId || !target) return;
+                event.preventDefault();
+                event.stopPropagation();
+                host._zenTabJustDroppedAt = Date.now();
+                clearIndicators();
+                host._zenTabDragId = null;
+                host._zenTabDropTarget = null;
+                this._moveSidebarSection(host, dragId, target.id, target.before);
+            });
+            container.addEventListener("dragend", () => {
+                clearIndicators();
+                host._zenTabDragId = null;
+                host._zenTabDropTarget = null;
+            });
+            // A drop is usually followed by a click that Lit would read as a tab
+            // switch; swallow it when it immediately follows a reorder.
+            container.addEventListener("click", (event) => {
+                if (Date.now() - (host._zenTabJustDroppedAt || 0) < 400) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+            }, true);
         }
 
         _registerNativeSectionObject(host) {
@@ -3380,6 +3548,7 @@
         _syncNativeLibrary(host) {
             if (!host?.isConnected) return;
             this._registerNativeSections(host);
+            this._syncSidebarDnD(host);
             const root = this._nativeRoot(host);
             if (root) this._ensureNativeStyles(root);
         }
@@ -3388,6 +3557,16 @@
             if (!root?.querySelector) return;
             const css = `
 @import url("chrome://sine/content/library-tweaks/features/saves.css");
+/* Sidebar drag-to-reorder drop indicators. */
+.zen-library-tab[drop-before] {
+  box-shadow: 0 -2px 0 var(--zen-primary-color, currentColor);
+}
+.zen-library-tab[drop-after] {
+  box-shadow: 0 2px 0 var(--zen-primary-color, currentColor);
+}
+.zen-library-tab[dragging-tab] {
+  opacity: 0.5;
+}
 /* Old-mod Saves glyph: the injected folder+ribbon SVG replaces the sprite box. */
 .zen-library-tab[data-section="bookmarks"] .zen-library-tab-icon-image {
   display: none;
@@ -3479,6 +3658,8 @@ zen-library-bookmarks-section .library-list-container {
   padding: 0 10px 10px;
   scrollbar-width: thin;
   transition: transform 0.3s ease;
+  /* The open panel is window-draggable; without this the scrollbar drags it. */
+  -moz-window-dragging: no-drag;
 }
 zen-library-bookmarks-section .zen-library-search-top[open] + .library-list-container {
   transform: translateY(var(--zen-library-filter-height, 0px));

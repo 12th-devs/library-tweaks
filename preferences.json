@@ -51,5 +51,22 @@
     "label": "Gathers images, video and audio from your Downloads folder, Zen Easel captures, Screenshots and optional extra folders (zen.library.media.user-dirs, semicolon-separated) into a masonry grid with type/location filters, previews and audio playback. Toggling applies immediately, no restart needed.",
     "size": "12px",
     "margin": "0 0 8px 0"
+  },
+  {
+    "type": "separator",
+    "label": "Sidebar",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.sidebar.reorder",
+    "label": "Drag sidebar tabs to rearrange sections",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Drag any Library sidebar tab up or down to reorder the sections. The arrangement is remembered across restarts. Turning this off locks the tabs in place.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
   }
 ]

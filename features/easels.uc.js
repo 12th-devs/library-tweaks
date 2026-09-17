@@ -804,6 +804,8 @@ zen-library-easels-section .easel-card-grid {
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, currentColor, transparent 50%) transparent;
+  /* The open panel is window-draggable; without this the scrollbar drags it. */
+  -moz-window-dragging: no-drag;
 }
 zen-library-easels-section .easel-card-grid > .empty-state {
   grid-column: 1 / -1;
@@ -992,6 +994,49 @@ zen-library-easels-section .easel-install-note {
   opacity: 0.55;
   max-width: 230px;
 }
+@keyframes zenEaselsBounce {
+  0% {
+    transform: translateY(0px) rotate(0deg);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  }
+  24.41% { /* Dip */
+    transform: translateY(3px) rotate(0deg);
+    animation-timing-function: cubic-bezier(0.4, 0, 0.64, 1);
+  }
+  55.88% { /* Launch and tilt */
+    transform: translateY(-12px) rotate(6deg);
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  88.24% {
+    transform: translateY(0px) rotate(0deg);
+    animation-timing-function: linear;
+  }
+  100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+}
+
+@keyframes zenEaselsSquiggle {
+  0% {
+    transform: scale(0.82);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  }
+  22% { /* Beat one */
+    transform: scale(0.94);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  }
+  40% {
+    transform: scale(0.8);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  }
+  58% { /* Beat two */
+    transform: scale(0.9);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  }
+  80%, 100% {
+    transform: scale(0.82);
+  }
+}
 /* Reference sidebar glyph: sprite box hidden, injected SVG in its place. The
    inner pane fills when selected, exactly like the reference section. */
 .zen-library-tab[data-section="easels"] .zen-library-tab-icon-image {
@@ -1008,6 +1053,16 @@ zen-library-easels-section .easel-install-note {
 }
 .zen-library-tab[data-section="easels"][active] .zen-easels-gradient {
   fill-opacity: 0.1 !important;
+}
+@media (prefers-reduced-motion: no-preference) {
+  :is(.zen-library-tab[data-section="easels"][active],
+      .zen-library-tab[data-section="easels"][animate]) .zen-easels-bounce {
+    animation: zenEaselsBounce 0.583s forwards;
+  }
+  :is(.zen-library-tab[data-section="easels"][active],
+      .zen-library-tab[data-section="easels"][animate]) .zen-easels-squiggle {
+    animation: zenEaselsSquiggle 0.583s forwards;
+  }
 }
 `;
             const existing = root.querySelector(":scope > #zen-easels-native-style") ||

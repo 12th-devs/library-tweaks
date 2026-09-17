@@ -40,6 +40,13 @@ needed — and turning it back on re-registers everything the same way.
 - Newest download-history items paint first while the folder walk fills in the
   rest behind them; the grid patches in place without losing scroll.
 
+## Sidebar
+
+- Drag any Library sidebar tab up or down to rearrange the sections; the
+  arrangement is remembered across restarts (`zen.library.tweaks.sidebar.order`).
+- The **Drag sidebar tabs to rearrange sections** toggle
+  (`zen.library.tweaks.sidebar.reorder`, on by default) locks the tabs in place.
+
 ## Install
 
 Install as a Sine mod by copying this folder into your Zen profile `chrome/sine-mods` directory and enabling it in `mods.json`.
