@@ -1383,15 +1383,36 @@
             return text.length > 90 ? `${text.slice(0, 87).trim()}...` : text;
         }
 
-        renderHeaderControls() {
-            const top = this.el("div", { className: "zen-library-search-top" });
+        // Trailing-edge debounce fallback for when the custom library mod (and its
+        // ZenLibraryUtil) is not loaded. Same re-arming semantics.
+        _debounceFn(fn, ms) {
+            let timer = null;
+            const wrapped = (...args) => {
+                if (timer) window.clearTimeout(timer);
+                timer = window.setTimeout(() => {
+                    timer = null;
+                    fn(...args);
+                }, ms);
+            };
+            wrapped.cancel = () => {
+                if (timer) window.clearTimeout(timer);
+                timer = null;
+            };
+            return wrapped;
+        }
+
+        renderHeaderControls() {            const top = this.el("div", { className: "zen-library-search-top" });
             const searchInput = this.el("input", {
                 type: "search",
                 placeholder: "Search Bookmarks...",
                 value: this._searchTerm,
                 oninput: (event) => {
                     this._searchTerm = event.target.value;
-                    if (!this._searchDebounce) this._searchDebounce = window.ZenLibraryUtil.debounce(() => this.renderList(), 250);
+                    if (!this._searchDebounce) {
+                        const debounce = window.ZenLibraryUtil?.debounce ||
+                            ((fn, ms) => this._debounceFn(fn, ms));
+                        this._searchDebounce = debounce(() => this.renderList(), 250);
+                    }
                     this._searchDebounce();
                 }
             });
@@ -2921,7 +2942,7 @@
         // is cached per URL, so this is a no-op when already installed).
         _ensureUrlbarProvider() {
             try {
-                ChromeUtils.importESModule("chrome://sine/content/zen-bookmarks/background/urlbar.sys.mjs");
+                ChromeUtils.importESModule("chrome://sine/content/library-tweaks/background/urlbar.sys.mjs");
             } catch (e) {
                 console.error("[ZenLibraryBookmarks] urlbar provider fallback failed:", e);
             }
@@ -2942,7 +2963,7 @@
                     hidden: false,
                     containerSelector: ".library-list-container",
                     iconSvg: this._bookmarksIconSvg(),
-                    styles: ["chrome://sine/content/zen-bookmarks/bookmarks.css"]
+                    styles: ["chrome://sine/content/library-tweaks/features/saves.css"]
                 });
                 this._ensureBookmarksModule();
                 this._watchAddBookmarkCommands();
@@ -3325,7 +3346,7 @@
         _ensureNativeStyles(root) {
             if (!root?.querySelector) return;
             const css = `
-@import url("chrome://sine/content/zen-bookmarks/bookmarks.css");
+@import url("chrome://sine/content/library-tweaks/features/saves.css");
 /* Old-mod Saves glyph: the injected folder+ribbon SVG replaces the sprite box. */
 .zen-library-tab[data-section="bookmarks"] .zen-library-tab-icon-image {
   display: none;
