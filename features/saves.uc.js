@@ -2835,6 +2835,8 @@
             this._onAddBookmarkCommand = this._onAddBookmarkCommand.bind(this);
             this._onUnload = this._onUnload.bind(this);
             this._onLibraryReady = this._registerWhenReady.bind(this);
+            this._traceHeartbeat();
+            this._trace("constructed");
             this._watchMasterPref();
             if (!this._anyFeatureEnabled()) {
                 this._debug("all features off; integration dormant");
@@ -2943,6 +2945,52 @@
             } catch (e) {
                 console.log("[ZenLibraryBookmarks]", ...args);
             }
+        }
+
+        // TEMPORARY open-path tracing (freeze diagnosis): appends timestamped
+        // markers to a log file, plus a 1s heartbeat that proves whether the
+        // main thread is still turning. Read %TEMP%/lt-trace.log after a hang.
+        _tracePath() {
+            if (this._tracePathValue === undefined) {
+                try {
+                    const tmp = Services.dirsvc.get("TmpD", Ci.nsIFile);
+                    this._tracePathValue = PathUtils.join(tmp.path, "lt-trace.log");
+                } catch (e) {
+                    this._tracePathValue = null;
+                }
+            }
+            return this._tracePathValue;
+        }
+
+        _trace(...args) {
+            try {
+                const path = this._tracePath();
+                if (!path) return;
+                const line = new Date().toISOString() + " " + args.map(a => String(a)).join(" ") + "\n";
+                const mod = ChromeUtils.importESModule("resource://gre/modules/IOUtils.sys.mjs").IOUtils;
+                this._traceChain = (this._traceChain || Promise.resolve())
+                    .then(() => mod.writeUTF8(path, line, { mode: "append" }))
+                    .catch(() => { });
+            } catch (e) { }
+        }
+
+        _traceHeartbeat() {
+            if (this._traceBeat) return;
+            this._traceBeat = true;
+            let n = 0;
+            const beat = () => {
+                n++;
+                this._trace("alive", n);
+                this._traceTimer = window.setTimeout(beat, 1000);
+            };
+            try {
+                const path = this._tracePath();
+                if (path) {
+                    const mod = ChromeUtils.importESModule("resource://gre/modules/IOUtils.sys.mjs").IOUtils;
+                    mod.writeUTF8(path, "=== restart " + new Date().toISOString() + " ===\n", {}).catch(() => { });
+                }
+            } catch (e) { }
+            beat();
         }
 
         init() {
@@ -3062,6 +3110,7 @@
         }
 
         _connectNativeLibrary(host) {
+            try { this._trace?.("connect", this._nativeHostObservers.has(host) ? "known" : "new"); } catch (e) { }
             if (!host || this._nativeHostObservers.has(host)) {
                 if (host) {
                     this._debug("sync existing native host", this._describeNativeHost(host));
@@ -3210,10 +3259,12 @@
         // Registers every enabled feature section on a native host. Per-feature
         // methods are optional-chained: the easels/media halves load later.
         _registerNativeSections(host) {
+            try { this._trace?.("registerSections"); } catch (e) { }
             try { this._registerNativeSectionObject(host); } catch (e) { }
             try { this._easelsRegister?.(host); } catch (e) { }
             try { this._mediaRegister?.(host); } catch (e) { }
             try { if (this._applySidebarOrder(host)) host.requestUpdate?.(); } catch (e) { }
+            try { this._trace?.("registerSectionsDone"); } catch (e) { }
         }
 
         /* --------------------------------------- sidebar drag-to-reorder */
@@ -3506,6 +3557,7 @@
                 Ctor.getInstance = function (...args) {
                     const instance = origGetInstance.apply(this, args);
                     try {
+                        integration._trace?.("getInstance");
                         integration._registerNativeSections(instance);
                         try {
                             const want = Services.prefs.getStringPref("zen.library.last-tab", "");
@@ -3551,10 +3603,12 @@
         // subsequent update.
         _syncNativeLibrary(host) {
             if (!host?.isConnected) return;
+            try { this._trace?.("sync"); } catch (e) { }
             this._registerNativeSections(host);
             this._syncSidebarDnD(host);
             const root = this._nativeRoot(host);
             if (root) this._ensureNativeStyles(root);
+            try { this._trace?.("syncDone"); } catch (e) { }
         }
 
         _ensureNativeStyles(root) {
