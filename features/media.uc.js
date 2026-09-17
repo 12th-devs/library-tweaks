@@ -2303,7 +2303,6 @@
         },
 
         _mediaRegister(host) {
-            try { window.gZenLibraryBookmarksIntegration?._trace?.("mediaRegister"); } catch (e) { }
             if (!host || !this._isMediaEnabled?.()) return false;
             if (!customElements.get("zen-library-media-section")) return false;
             const sections = host.zenLibrarySections;
@@ -2322,7 +2321,6 @@
             if (changed) {
                 try { host.requestUpdate?.(); } catch (e) { }
             }
-            try { window.gZenLibraryBookmarksIntegration?._trace?.("mediaRegisterDone"); } catch (e) { }
             return true;
         },
 

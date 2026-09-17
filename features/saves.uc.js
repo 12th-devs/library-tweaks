@@ -2835,8 +2835,6 @@
             this._onAddBookmarkCommand = this._onAddBookmarkCommand.bind(this);
             this._onUnload = this._onUnload.bind(this);
             this._onLibraryReady = this._registerWhenReady.bind(this);
-            this._traceHeartbeat();
-            this._trace("constructed");
             this._watchMasterPref();
             if (!this._anyFeatureEnabled()) {
                 this._debug("all features off; integration dormant");
@@ -2947,67 +2945,6 @@
             }
         }
 
-        // TEMPORARY open-path tracing (freeze diagnosis): appends timestamped
-        // markers to sine-mods/lt-trace.log, plus a 1s heartbeat that proves
-        // whether the main thread is still turning. Synchronous nsIFile writes
-        // (no IOUtils dependency) so a logging failure cannot hide silently.
-        _traceFile(truncate = false) {
-            try {
-                const dir = Services.dirsvc.get("ProfD", Ci.nsIFile);
-                dir.appendRelativePath("chrome/sine-mods");
-                if (!dir.exists()) return null;
-                const file = dir.clone();
-                file.append("lt-trace.log");
-                const PR_WRITE = 0x02;
-                const PR_CREATE_FILE = 0x08;
-                const PR_APPEND = 0x10;
-                const PR_TRUNCATE = 0x20;
-                const fos = Cc["@mozilla.org/network/file-output-stream;1"]
-                    .createInstance(Ci.nsIFileOutputStream);
-                fos.init(file, PR_WRITE | PR_CREATE_FILE | (truncate ? PR_TRUNCATE : PR_APPEND), 0o644, 0);
-                return fos;
-            } catch (e) {
-                return null;
-            }
-        }
-
-        _traceWrite(line, truncate = false) {
-            let fos = null;
-            try {
-                fos = this._traceFile(truncate);
-                if (!fos) return false;
-                const cos = Cc["@mozilla.org/intl/converter-output-stream;1"]
-                    .createInstance(Ci.nsIConverterOutputStream);
-                cos.init(fos, "UTF-8", 0, 0);
-                cos.writeString(line);
-                cos.close();
-                return true;
-            } catch (e) {
-                try { fos?.close?.(); } catch (x) { }
-                return false;
-            }
-        }
-
-        _trace(...args) {
-            try {
-                this._traceWrite(new Date().toISOString() + " " + args.map(a => String(a)).join(" ") + "\n", false);
-            } catch (e) { }
-        }
-
-        _traceHeartbeat() {
-            if (this._traceBeat) return;
-            this._traceBeat = true;
-            const opened = this._traceWrite("=== restart " + new Date().toISOString() + " ===\n", true);
-            try { this._traceLogOpened = opened; } catch (e) { }
-            let n = 0;
-            const beat = () => {
-                n++;
-                this._trace("alive", n);
-                this._traceTimer = window.setTimeout(beat, 1000);
-            };
-            beat();
-        }
-
         init() {
             if (this._initialized) return;
             this._initialized = true;
@@ -3066,6 +3003,13 @@
                 return;
             }
             if (this._retryTimer) return;
+            // The custom library mod is disabled in most setups, so this path can
+            // never succeed: retry briefly, then stop instead of spinning forever.
+            this._legacyRetries = (this._legacyRetries || 0) + 1;
+            if (this._legacyRetries > 40) {
+                this._debug("legacy ZenLibrarySections absent; giving up");
+                return;
+            }
             this._debug("legacy ZenLibrarySections not ready; retrying");
             this._retryTimer = setTimeout(() => {
                 this._retryTimer = null;
@@ -3082,14 +3026,17 @@
             const ctor = customElements.get("zen-library");
             if (!ctor) {
                 this._debug("native zen-library custom element not defined yet");
-                try {
-                    customElements.whenDefined("zen-library")
-                        .then(() => {
-                            this._debug("native zen-library custom element defined");
-                            this._registerNativeWhenReady();
-                        })
-                        .catch(err => this._debug("native whenDefined failed", err));
-                } catch (e) {}
+                if (!this._nativeWhenDefinedHooked) {
+                    this._nativeWhenDefinedHooked = true;
+                    try {
+                        customElements.whenDefined("zen-library")
+                            .then(() => {
+                                this._debug("native zen-library custom element defined");
+                                this._registerNativeWhenReady();
+                            })
+                            .catch(err => this._debug("native whenDefined failed", err));
+                    } catch (e) {}
+                }
                 return false;
             }
             this._nativeReady = true;
@@ -3118,14 +3065,13 @@
 
         _connectExistingNativeLibraries() {
             const hosts = Array.from(document.querySelectorAll?.("zen-library") || []);
-            this._debug("connect existing native libraries", { count: hosts.length });
+            if (hosts.length) this._debug("connect existing native libraries", { count: hosts.length });
             for (const host of hosts) {
                 this._connectNativeLibrary(host);
             }
         }
 
         _connectNativeLibrary(host) {
-            try { this._trace?.("connect", this._nativeHostObservers.has(host) ? "known" : "new"); } catch (e) { }
             if (!host || this._nativeHostObservers.has(host)) {
                 if (host) {
                     this._debug("sync existing native host", this._describeNativeHost(host));
@@ -3274,12 +3220,10 @@
         // Registers every enabled feature section on a native host. Per-feature
         // methods are optional-chained: the easels/media halves load later.
         _registerNativeSections(host) {
-            try { this._trace?.("registerSections"); } catch (e) { }
             try { this._registerNativeSectionObject(host); } catch (e) { }
             try { this._easelsRegister?.(host); } catch (e) { }
             try { this._mediaRegister?.(host); } catch (e) { }
             try { if (this._applySidebarOrder(host)) host.requestUpdate?.(); } catch (e) { }
-            try { this._trace?.("registerSectionsDone"); } catch (e) { }
         }
 
         /* --------------------------------------- sidebar drag-to-reorder */
@@ -3572,7 +3516,6 @@
                 Ctor.getInstance = function (...args) {
                     const instance = origGetInstance.apply(this, args);
                     try {
-                        integration._trace?.("getInstance");
                         integration._registerNativeSections(instance);
                         try {
                             const want = Services.prefs.getStringPref("zen.library.last-tab", "");
@@ -3618,12 +3561,10 @@
         // subsequent update.
         _syncNativeLibrary(host) {
             if (!host?.isConnected) return;
-            try { this._trace?.("sync"); } catch (e) { }
             this._registerNativeSections(host);
             this._syncSidebarDnD(host);
             const root = this._nativeRoot(host);
             if (root) this._ensureNativeStyles(root);
-            try { this._trace?.("syncDone"); } catch (e) { }
         }
 
         _ensureNativeStyles(root) {
