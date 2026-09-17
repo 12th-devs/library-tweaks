@@ -1,0 +1,31 @@
+[
+  {
+    "type": "text",
+    "label": "Zen Bookmarks",
+    "size": "20px",
+    "margin": "18px 0 2px 0"
+  },
+  {
+    "type": "text",
+    "label": "Adds a Saves section to the native Zen Library, plus smart Ctrl+D saving, tab-drop bookmarking and natural-language urlbar search.",
+    "size": "12px",
+    "margin": "0 0 6px 0"
+  },
+  {
+    "type": "separator",
+    "label": "Master toggle",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.bookmarks.enabled",
+    "label": "Enable Zen Bookmarks",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Master switch for the whole mod: the Saves library section, Ctrl+D smart save, bookmark shortcuts and tab-drop handling. Turning it off unregisters everything and restores native behavior immediately, no restart needed (the urlbar provider, once loaded, stays until restart).",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  }
+]

@@ -1,0 +1,299 @@
+/* BOOKMARKS PSEUDO-SECTION */
+.bookmarks-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 6px 18px;
+}
+
+.bookmark-row {
+    min-height: 42px;
+    padding-inline-start: calc(10px + var(--bookmark-depth, 0) * 14px);
+    padding-inline-end: 10px;
+    gap: 10px;
+    position: relative;
+    transition: background-color 120ms ease, transform 140ms ease, opacity 140ms ease;
+}
+
+.bookmark-row[dragged] {
+    opacity: 0.45;
+}
+
+.bookmark-row[drop-into] {
+    background: color-mix(in srgb, var(--zen-primary-color, currentColor) 18%, transparent);
+}
+
+.bookmark-row[drop-before]::before,
+.bookmark-row[drop-after]::before {
+    content: "";
+    position: absolute;
+    left: calc(10px + var(--bookmark-depth, 0) * 14px);
+    right: 10px;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--zen-primary-color, currentColor);
+}
+
+.bookmark-row[drop-before]::before {
+    top: -1px;
+}
+
+.bookmark-row[drop-after]::before {
+    bottom: -1px;
+}
+
+.bookmark-row-icon,
+.bookmark-row-favicon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.bookmark-row-icon {
+    background-color: currentColor;
+    opacity: 0.72;
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: contain;
+}
+
+.bookmark-row-favicon {
+    object-fit: contain;
+    border-radius: 4px;
+}
+
+.bookmark-row-icon.folder {
+    mask-image: url("chrome://browser/skin/zen-icons/folder.svg");
+    opacity: 0.82;
+}
+
+.bookmark-row-icon.page {
+    mask-image: url("chrome://browser/skin/zen-icons/globe.svg");
+}
+
+.bookmark-row-text {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+}
+
+.bookmark-row-title-line,
+.bookmark-row-title,
+.bookmark-row-subtitle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bookmark-row-title-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    /* Locked to the pill height: hiding tags on hover must not collapse the
+       line and push the URL subtitle up. */
+    min-height: 22px;
+}
+
+.bookmark-row-title {
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bookmark-row-subtitle {
+    font-size: 11px;
+    opacity: 0.62;
+}
+
+.bookmark-row-actions {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.bookmark-row:hover .bookmark-row-actions,
+.bookmark-row:focus-within .bookmark-row-actions {
+    display: flex;
+}
+
+/* Hovering a bookmark hides its tags so the title extends the full width.
+   (Ellipsis remains only as a backstop for titles longer than the row.)
+   Keyboard focus keeps tags visible so the pills stay tab-reachable. */
+.bookmark-row:hover:not(:focus-within) .bookmark-tags {
+    display: none;
+}
+
+.bookmark-tags {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    /* Tags win over the title: never shrink, so pills always render whole
+       and the title takes the truncation instead. */
+    flex: 0 0 auto;
+}
+
+.bookmark-tag {
+    flex: 0 0 auto;
+    height: 22px;
+    border: 0;
+    border-radius: 6px;
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 22px;
+    white-space: nowrap;
+    color: inherit;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    cursor: pointer;
+}
+
+.bookmark-tag:hover {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.bookmark-separator-row {
+    height: 12px;
+    padding-inline-start: calc(10px + var(--bookmark-depth, 0) * 14px);
+    padding-inline-end: 10px;
+    display: flex;
+    align-items: center;
+    opacity: 0.72;
+}
+
+.bookmark-separator-line {
+    width: 100%;
+    height: 1px;
+    background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.bookmark-folder-row::after {
+    content: "";
+    width: 14px;
+    height: 14px;
+    margin-inline-start: auto;
+    flex-shrink: 0;
+    background-color: currentColor;
+    opacity: 0.48;
+    mask: url("chrome://browser/skin/zen-icons/arrow-right.svg") center / contain no-repeat;
+    transition: transform 150ms var(--zen-library-easing, ease), opacity 120ms ease;
+}
+
+.bookmark-folder-row[open]::after {
+    transform: rotate(90deg);
+    opacity: 0.7;
+}
+
+.empty-icon.bookmarks-icon {
+    mask-image: url("chrome://browser/skin/zen-icons/bookmark.svg");
+}
+
+/* Tab-drop target: same wash as the button hover while a tab hovers it. */
+#zen-library-button.tabdrop-hover {
+    background: var(--toolbarbutton-hover-background, color-mix(in srgb, currentColor 12%, transparent));
+}
+
+/* Stacked favicon badge pinned over the library button during a tab drag.
+   Positioned inline from the button rect; icons cascade with x+y offsets. */
+.zen-tabdrop-badge {
+    position: fixed;
+    z-index: 2147483646;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.zen-tabdrop-badge-more {
+    font-size: 11px;
+    font-weight: 700;
+    color: white;
+    background: var(--zen-primary-color, #0060df);
+    border-radius: 9999px;
+    padding: 2px 8px;
+    margin: 8px 0 0 -8px;
+    align-self: center;
+}
+
+.zen-bookmarks-save-tooltip-container {
+    position: fixed;
+    z-index: 2147483645;
+    width: 300px;
+    max-width: min(300px, calc(100vw - 16px));
+    pointer-events: none;
+    box-sizing: border-box;
+    -moz-window-dragging: no-drag;
+}
+
+.zen-bookmarks-save-tooltip {
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
+    background: color-mix(in srgb, var(--zen-primary-color) 40%, black 60%);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(10px);
+    border-radius: calc(10px * var(--zen-squircle-value, 1));
+    padding: 8px 5px 6px 7px;
+    color: white;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    pointer-events: none;
+    opacity: 0;
+    transform: scaleY(0.8) translateY(10px);
+    transform-origin: bottom left;
+    transition: opacity 0.3s ease-out 0.15s,
+        transform 0.3s cubic-bezier(0.25, 0.1, 0.25, 1.1) 0.15s;
+    min-width: 0;
+}
+
+/* Smart-save tooltip text: mirrors tidy-downloads rename tooltip
+   (.card-status / .card-title / .card-original-filename) — same casing
+   (no text-transform), spacing, and text sizes (10px / 11px / 9px). */
+.zen-bookmarks-save-tooltip .card-status {
+    font-size: 10px;
+    color: #a0a0a0;
+    line-height: 1.2;
+}
+
+.zen-bookmarks-save-tooltip .card-title {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    padding-right: 5px;
+    box-sizing: border-box;
+    margin-top: 1px;
+    margin-bottom: 1px;
+    mask-image: linear-gradient(to right, black 80%, transparent 100%);
+    mask-size: 100% 100%;
+    mask-position: left;
+    mask-repeat: no-repeat;
+    mask-origin: content-box;
+    mask-clip: content-box;
+}
+
+.zen-bookmarks-save-tooltip .card-original-filename {
+    display: block;
+    font-size: 9px;
+    color: rgba(255, 255, 255, 0.3);
+    white-space: nowrap;
+    overflow: hidden;
+    margin-bottom: 2px;
+    padding-right: 50px;
+    box-sizing: border-box;
+    text-decoration: none;
+    mask-image: linear-gradient(to right, black 80%, transparent 100%);
+    mask-size: 100% 100%;
+    mask-position: left;
+    mask-repeat: no-repeat;
+    mask-origin: content-box;
+    mask-clip: content-box;
+}

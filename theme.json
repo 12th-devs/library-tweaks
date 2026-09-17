@@ -1,0 +1,33 @@
+{
+  "id": "zen-bookmarks",
+  "homepage": "https://github.com/trashshii007/Zen-Library",
+  "author": "Codex",
+  "name": "Zen Bookmarks",
+  "description": "Adds a Bookmarks section to Zen Library through the ZenLibrarySections extension API.",
+  "version": "0.2.0",
+  "createdAt": "2026-09-15",
+  "updatedAt": "2026-09-17",
+  "readme": "https://github.com/trashshii007/Zen-Library",
+  "preferences": "preferences.json",
+  "style": {
+    "chrome": ""
+  },
+  "scripts": {
+    "background/urlbar.sys.mjs": {
+      "name": "Zen Bookmarks urlbar provider",
+      "description": "Natural-language bookmark search in the urlbar. Imported once per process."
+    },
+    "Bookmarks.uc.js": {
+      "name": "Zen Bookmarks",
+      "description": "Registers the Bookmarks pseudo-section with Zen Library.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 20
+    }
+  },
+  "tags": [
+    "Javascript",
+    "Bookmarks",
+    "Zen Library"
+  ],
+  "fork": ["zen"]
+}
