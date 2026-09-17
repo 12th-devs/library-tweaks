@@ -2949,47 +2949,62 @@
 
         // TEMPORARY open-path tracing (freeze diagnosis): appends timestamped
         // markers to sine-mods/lt-trace.log, plus a 1s heartbeat that proves
-        // whether the main thread is still turning.
-        _tracePath() {
-            if (this._tracePathValue === undefined) {
-                try {
-                    this._tracePathValue = PathUtils.join(
-                        PathUtils.profileDir, "chrome", "sine-mods", "lt-trace.log");
-                } catch (e) {
-                    this._tracePathValue = null;
-                }
+        // whether the main thread is still turning. Synchronous nsIFile writes
+        // (no IOUtils dependency) so a logging failure cannot hide silently.
+        _traceFile(truncate = false) {
+            try {
+                const dir = Services.dirsvc.get("ProfD", Ci.nsIFile);
+                dir.appendRelativePath("chrome/sine-mods");
+                if (!dir.exists()) return null;
+                const file = dir.clone();
+                file.append("lt-trace.log");
+                const PR_WRITE = 0x02;
+                const PR_CREATE_FILE = 0x08;
+                const PR_APPEND = 0x10;
+                const PR_TRUNCATE = 0x20;
+                const fos = Cc["@mozilla.org/network/file-output-stream;1"]
+                    .createInstance(Ci.nsIFileOutputStream);
+                fos.init(file, PR_WRITE | PR_CREATE_FILE | (truncate ? PR_TRUNCATE : PR_APPEND), 0o644, 0);
+                return fos;
+            } catch (e) {
+                return null;
             }
-            return this._tracePathValue;
+        }
+
+        _traceWrite(line, truncate = false) {
+            let fos = null;
+            try {
+                fos = this._traceFile(truncate);
+                if (!fos) return false;
+                const cos = Cc["@mozilla.org/intl/converter-output-stream;1"]
+                    .createInstance(Ci.nsIConverterOutputStream);
+                cos.init(fos, "UTF-8", 0, 0);
+                cos.writeString(line);
+                cos.close();
+                return true;
+            } catch (e) {
+                try { fos?.close?.(); } catch (x) { }
+                return false;
+            }
         }
 
         _trace(...args) {
             try {
-                const path = this._tracePath();
-                if (!path) return;
-                const line = new Date().toISOString() + " " + args.map(a => String(a)).join(" ") + "\n";
-                const mod = ChromeUtils.importESModule("resource://gre/modules/IOUtils.sys.mjs").IOUtils;
-                this._traceChain = (this._traceChain || Promise.resolve())
-                    .then(() => mod.writeUTF8(path, line, { mode: "append" }))
-                    .catch(() => { });
+                this._traceWrite(new Date().toISOString() + " " + args.map(a => String(a)).join(" ") + "\n", false);
             } catch (e) { }
         }
 
         _traceHeartbeat() {
             if (this._traceBeat) return;
             this._traceBeat = true;
+            const opened = this._traceWrite("=== restart " + new Date().toISOString() + " ===\n", true);
+            try { this._traceLogOpened = opened; } catch (e) { }
             let n = 0;
             const beat = () => {
                 n++;
                 this._trace("alive", n);
                 this._traceTimer = window.setTimeout(beat, 1000);
             };
-            try {
-                const path = this._tracePath();
-                if (path) {
-                    const mod = ChromeUtils.importESModule("resource://gre/modules/IOUtils.sys.mjs").IOUtils;
-                    mod.writeUTF8(path, "=== restart " + new Date().toISOString() + " ===\n", {}).catch(() => { });
-                }
-            } catch (e) { }
             beat();
         }
 
