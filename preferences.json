@@ -65,7 +65,122 @@
   },
   {
     "type": "text",
-    "label": "Drag any Library sidebar tab up or down to reorder the sections. The arrangement is remembered across restarts. Turning this off locks the tabs in place.",
+    "label": "Drag any Library sidebar tab up or down to rearrange the sections. The arrangement is remembered across restarts. Turning this off locks the tabs in place.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "separator",
+    "label": "History",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.history.menu",
+    "label": "Right-click menu on history items",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Adds Copy, Forget About This Site and Delete to right-clicked history rows, like the classic library.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "separator",
+    "label": "Boosts",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.boosts.ui",
+    "label": "Better Boosts presentation",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Groups boosts under domain headers with large icon tiles and a strike-through on disabled boosts. Row behavior stays native.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "separator",
+    "label": "Spaces",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.spaces.drop-indicator",
+    "label": "Drop position indicator",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Shows an accent line at the exact drop position while dragging over spaces. Visual only; drops behave as native.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.spaces.new-button",
+    "label": "New space button",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Adds a trailing + tile that opens workspace creation.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "text",
+    "label": "Complex space gradients need no toggle: the native section already passes theme gradient strings through, so richer gradients appear automatically when a gradient provider (e.g. BetterZenGradientPicker) supplies them.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "separator",
+    "label": "Downloads",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.downloads.system",
+    "label": "Also show files from the Downloads folder",
+    "defaultValue": false
+  },
+  {
+    "type": "text",
+    "label": "Appends an On this device group with top-level files and folders from your Downloads folder that are not in download history (hidden and partial files skipped). The folder is read off the main thread in small chunks.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.downloads.rename",
+    "label": "Rename files from the menu",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Adds Rename file to the download context menus. File icons already resolve from the OS exactly like the classic library, so there is nothing to toggle there.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "separator",
+    "label": "Animation",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.animation.switch",
+    "label": "Animate section switches",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Fades and rises incoming sections when switching tabs, using the classic easing. Respects reduced-motion settings.",
     "size": "12px",
     "margin": "0 0 8px 0"
   }

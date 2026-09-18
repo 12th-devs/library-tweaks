@@ -47,6 +47,45 @@ needed — and turning it back on re-registers everything the same way.
 - The **Drag sidebar tabs to rearrange sections** toggle
   (`zen.library.tweaks.sidebar.reorder`, on by default) locks the tabs in place.
 
+## History — `zen.library.tweaks.history.menu`
+
+- Right-click any native history row for **Copy**, **Forget About This Site**
+  and **Delete**, mirroring the classic library menu. The visit is resolved
+  through Places search; native sections refresh themselves after each action.
+
+## Boosts — `zen.library.tweaks.boosts.ui`
+
+- Groups native boost rows under domain headers, enlarges icons into tinted
+  tiles, and strikes through disabled boosts — the classic presentation.
+- Clicks, the toggle and the context menu stay 100% native by design.
+
+## Spaces
+
+- **Drop position indicator** (`zen.library.tweaks.spaces.drop-indicator`):
+  an accent line (rows) or card outline follows the cursor while dragging over
+  native spaces. Visual only; drops behave exactly as native.
+- **New space button** (`zen.library.tweaks.spaces.new-button`): a trailing
+  + tile opens workspace creation.
+- Complex gradients need no toggle: native already passes theme gradient
+  strings through untouched, so richer gradients show up automatically when a
+  gradient provider mod supplies them.
+
+## Downloads
+
+- **Also show files from the Downloads folder**
+  (`zen.library.tweaks.downloads.system`, off by default): appends an
+  On this device group with top-level Downloads-folder files and folders that
+  have no history entry (hidden/partial skipped), with Open, Show in Folder,
+  Rename and Delete. Respects the native search term.
+- **Rename file** (`zen.library.tweaks.downloads.rename`): adds renaming to
+  the native download menu, resolved against live downloads.
+- File icons already resolve from the OS exactly like the classic library.
+
+## Animation — `zen.library.tweaks.animation.switch`
+
+- Incoming sections fade and rise on tab switches with the classic easing;
+  in-place updates never retrigger it, and reduced-motion is respected.
+
 ## Install
 
 Install as a Sine mod by copying this folder into your Zen profile `chrome/sine-mods` directory and enabling it in `mods.json`.

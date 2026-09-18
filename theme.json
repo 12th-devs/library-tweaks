@@ -31,6 +31,36 @@
       "description": "Media section for the native Zen Library.",
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 22
+    },
+    "features/tweak-history.uc.js": {
+      "name": "Library Tweaks - History menu",
+      "description": "Right-click options for native History items.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 23
+    },
+    "features/tweak-anim.uc.js": {
+      "name": "Library Tweaks - Section animation",
+      "description": "Entrance animation when switching library sections.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 24
+    },
+    "features/tweak-boosts.uc.js": {
+      "name": "Library Tweaks - Boosts UI",
+      "description": "Grouped, tiled Boosts presentation for the native section.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 25
+    },
+    "features/tweak-spaces.uc.js": {
+      "name": "Library Tweaks - Spaces extras",
+      "description": "Drop indicator and new-space button for native Spaces.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 26
+    },
+    "features/tweak-downloads.uc.js": {
+      "name": "Library Tweaks - Downloads extras",
+      "description": "On-device files group and rename support for native Downloads.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 27
     }
   },
   "tags": [
