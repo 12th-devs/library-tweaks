@@ -28,7 +28,6 @@
             this._easels = [];
             this._searchTerm = "";
             this._grid = null;
-            this._searchDebounce = null;
             this._refreshing = false;
             this._rerenderLaps = 0;
             this._pinnedSet = new Set();
@@ -86,53 +85,6 @@
             } catch (e) {
                 return false;
             }
-        }
-
-        // Trailing-edge debounce fallback for when the custom library mod (and its
-        // ZenLibraryUtil) is not loaded. Same re-arming semantics.
-        _debounceFn(fn, ms) {
-            let timer = null;
-            const wrapped = (...args) => {
-                if (timer) window.clearTimeout(timer);
-                timer = window.setTimeout(() => {
-                    timer = null;
-                    fn(...args);
-                }, ms);
-            };
-            wrapped.cancel = () => {
-                if (timer) window.clearTimeout(timer);
-                timer = null;
-            };
-            return wrapped;
-        }
-
-        // Native pill search header (no filter panel on this section). Typing only
-        // refills the grid in place, so focus never leaves the field.
-        renderHeaderControls() {
-            const searchInput = this.el("input", {
-                type: "search",
-                placeholder: "Search Easels...",
-                value: this._searchTerm,
-                oninput: (event) => {
-                    this._searchTerm = event.target.value;
-                    if (!this._searchDebounce) {
-                        const debounce = window.ZenLibraryUtil?.debounce ||
-                            ((fn, ms) => this._debounceFn(fn, ms));
-                        this._searchDebounce = debounce(() => {
-                            if (this._grid?.isConnected) this._fillGrid(this._grid);
-                        }, 250);
-                    }
-                    this._searchDebounce();
-                }
-            });
-            return this.el("div", { className: "zen-library-search-top" }, [
-                this.el("div", { className: "zen-library-search-header" }, [
-                    this.el("div", { className: "zen-library-search-box" }, [
-                        this.el("img", { src: "chrome://browser/skin/zen-icons/search-glass.svg", alt: "" }),
-                        searchInput
-                    ])
-                ])
-            ]);
         }
 
         render() {
@@ -628,10 +580,7 @@
                 // Fresh mount (not an update-driven re-render): new settling window.
                 module._rerenderLaps = 0;
                 this.replaceChildren();
-                let header = null;
-                try { header = module.renderHeaderControls(); }
-                catch (e) { console.error("[LibraryTweaks] easels header failed:", e); }
-                if (header) this.appendChild(header);
+                // No search header on this section: the grid always shows all.
                 let grid = null;
                 try { grid = module.render(); }
                 catch (e) { console.error("[LibraryTweaks] easels grid failed:", e); }
