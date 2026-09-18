@@ -204,7 +204,7 @@
   },
   {
     "type": "text",
-    "label": "Appends an On this device group with top-level files and folders from your Downloads folder that are not in download history (hidden and partial files skipped). The folder is read off the main thread in small chunks.",
+    "label": "Appends an On this device group with top-level Downloads-folder files and folders that have no history entry (hidden/partial skipped). Identical files are combined with the device copy winning: matching native rows hide (in-progress rows never hide) along with any emptied date groups.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },

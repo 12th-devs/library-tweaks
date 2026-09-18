@@ -93,8 +93,10 @@ needed — and turning it back on re-registers everything the same way.
 - **Also show files from the Downloads folder**
   (`zen.library.tweaks.downloads.system`, off by default): appends an
   On this device group with top-level Downloads-folder files and folders that
-  have no history entry (hidden/partial skipped), with Open, Show in Folder,
-  Rename and Delete. Respects the native search term.
+  have no history entry (hidden/partial skipped). Identical files combine with
+  the device copy winning: matching native rows (and emptied date groups) hide
+  while in-progress rows always stay visible. Device rows offer Open, Show in
+  Folder, Rename and Delete, and respect the native search term.
 - **Rename file** (`zen.library.tweaks.downloads.rename`): adds renaming to
   the native download menu, resolved against live downloads.
 - **Grey out moved or missing files**

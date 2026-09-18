@@ -46,35 +46,24 @@
         try { document.getElementById(DIM_STYLE_ID)?.remove(); } catch (e) { }
     }
 
-    function clearMissingMarks() {
+    function clearRowOverrides() {
         try {
-            document.querySelectorAll?.("zen-library-downloads-section .zen-library-row[lt-missing]")
-                .forEach(n => n.removeAttribute("lt-missing"));
+            for (const row of document.querySelectorAll?.("zen-library-downloads-section .zen-library-row") || []) {
+                row.hidden = false;
+                row.removeAttribute("lt-missing");
+            }
+            for (const group of document.querySelectorAll?.("zen-library-downloads-section .zen-library-group") || []) {
+                if (!group.classList.contains(GROUP_CLASS)) group.hidden = false;
+            }
         } catch (e) { }
     }
 
-    // Grey out moved/missing files. Debounced per section and resolved against
-    // one unified snapshot per pass, so native re-render bursts stay cheap.
-    const markTimers = new WeakMap();
-    function scheduleMarkMissing(section) {
-        if (!dimOn() || markTimers.get(section)) return;
-        markTimers.set(section, window.setTimeout(() => {
-            markTimers.delete(section);
-            markMissingRows(section);
-        }, 750));
-    }
-
-    async function markMissingRows(section) {
-        if (!dimOn() || !section?.isConnected) return;
-        let rows = [];
-        try {
-            for (const row of section.querySelectorAll(".zen-library-row")) {
-                if (row.closest("." + GROUP_CLASS)) continue;
-                if (row._ltMissingChecked) continue;
-                rows.push(row);
-            }
-        } catch (e) { return; }
-        if (!rows.length) return;
+    // Filename index over the unified session+history snapshot, shared by one
+    // pass so rename/menu/sync never fan out into repeated full reads.
+    let unifiedCache = null;
+    async function downloadIndex(maxAgeMs = 30000) {
+        const now = Date.now();
+        if (unifiedCache && now - unifiedCache.at < maxAgeMs) return unifiedCache.byName;
         const byName = new Map();
         try {
             for (const list of await unifiedLists()) {
@@ -86,10 +75,63 @@
                     catch (e) { continue; }
                     if (!name) continue;
                     if (!byName.has(name)) byName.set(name, []);
-                    byName.get(name).push(download);
+                    const arr = byName.get(name);
+                    if (!arr.includes(download)) arr.push(download);
                 }
             }
-        } catch (e) { return; }
+        } catch (e) { }
+        unifiedCache = { at: now, byName };
+        return byName;
+    }
+
+    function matchRowDownload(byName, row) {
+        const filename = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
+        if (!filename) return null;
+        const urlText = (row.querySelector(".zen-library-download-url")?.textContent || "").trim();
+        const cands = (byName.get(filename) || []).filter(d => {
+            try { return !urlText || String(d.source?.url || "").includes(urlText); }
+            catch (e) { return true; }
+        });
+        return cands.length === 1 ? cands[0] : null;
+    }
+
+    function rowIsLive(row) {
+        try {
+            return row.hasAttribute("pending") || row.hasAttribute("indeterminate") ||
+                row.hasAttribute("paused") || row.hasAttribute("opening");
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // One debounced pass per section that reconciles native rows with disk truth:
+    //  - device override: a native row for a file also on disk hides, so
+    //    identical files combine with the device row winning (never live rows);
+    //  - moved/missing files grey out (dim pref).
+    // Attribute-only changes on Lit-owned nodes: Lit never binds hidden or
+    // lt-missing, so updates never fight these back.
+    const syncTimers = new WeakMap();
+    function scheduleSyncRows(section) {
+        if ((!dimOn() && !systemOn()) || syncTimers.get(section)) return;
+        syncTimers.set(section, window.setTimeout(() => {
+            syncTimers.delete(section);
+            syncNativeRows(section);
+        }, 750));
+    }
+
+    async function syncNativeRows(section) {
+        if ((!dimOn() && !systemOn()) || !section?.isConnected) return;
+        const byName = await downloadIndex();
+        if (!section.isConnected) return;
+        let diskKeys = null;
+        if (systemOn()) {
+            try {
+                diskKeys = new Set((await scanDisk()).map(i => normPath(i.targetPath)));
+            } catch (e) {
+                diskKeys = new Set();
+            }
+            if (!section.isConnected) return;
+        }
         const statCache = new Map();
         const isMissing = async (download) => {
             try {
@@ -107,21 +149,38 @@
                 return false;
             }
         };
-        for (const row of rows) {
-            if (!row.isConnected) continue;
-            row._ltMissingChecked = true;
-            const filename = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
-            const urlText = (row.querySelector(".zen-library-download-url")?.textContent || "").trim();
-            const cands = (byName.get(filename) || []).filter(d => {
-                try { return !urlText || String(d.source?.url || "").includes(urlText); }
-                catch (e) { return true; }
-            });
-            if (cands.length !== 1) continue;
-            try {
-                if (await isMissing(cands[0])) row.setAttribute("lt-missing", "");
-                else row.removeAttribute("lt-missing");
-            } catch (e) { }
-        }
+        try {
+            for (const row of section.querySelectorAll(".zen-library-row")) {
+                if (!row.isConnected || row.closest("." + GROUP_CLASS)) continue;
+                if (rowIsLive(row)) {
+                    row.hidden = false;
+                    row.removeAttribute("lt-missing");
+                    continue;
+                }
+                const download = matchRowDownload(byName, row);
+                if (systemOn() && diskKeys && download?.target?.path &&
+                    diskKeys.has(normPath(download.target.path))) {
+                    row.hidden = true;
+                    row.removeAttribute("lt-missing");
+                    continue;
+                }
+                row.hidden = false;
+                if (dimOn() && download) {
+                    try {
+                        if (await isMissing(download)) row.setAttribute("lt-missing", "");
+                    } catch (e) { }
+                } else {
+                    row.removeAttribute("lt-missing");
+                }
+            }
+            // Hide native groups emptied by shadowing so no bare headers linger.
+            for (const group of section.querySelectorAll(".zen-library-group")) {
+                if (group.classList.contains(GROUP_CLASS)) continue;
+                const visible = [...group.querySelectorAll(":scope > .zen-library-row")]
+                    .some(r => !r.hidden);
+                group.hidden = !visible;
+            }
+        } catch (e) { }
     }
 
     const normPath = (path) => String(path || "").replace(/\\/g, "/").toLowerCase();
@@ -408,37 +467,14 @@
 
     async function resolveNativeDownload(row) {
         try {
-            const filename = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
-            const urlText = (row.querySelector(".zen-library-download-url")?.textContent || "").trim();
-            if (!filename) {
-                console.warn("[LibraryTweaks] rename: no title in row");
+            const byName = await downloadIndex(10000);
+            const download = matchRowDownload(byName, row);
+            if (!download) {
+                const filename = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
+                console.warn("[LibraryTweaks] rename: no unique download matches", JSON.stringify(filename));
                 return null;
             }
-            const cands = [];
-            for (const list of await unifiedLists()) {
-                let all = [];
-                try { all = await list.getAll(); } catch (e) { continue; }
-                for (const download of all) {
-                    let name = "";
-                    let source = "";
-                    try {
-                        name = download.target?.path ? PathUtils.filename(download.target.path) : "";
-                        source = String(download.source?.url || "");
-                    } catch (e) { continue; }
-                    if (name !== filename) continue;
-                    if (urlText && !source.includes(urlText)) continue;
-                    if (!cands.includes(download)) cands.push(download);
-                }
-            }
-            if (!cands.length) {
-                console.warn("[LibraryTweaks] rename: no download matches", JSON.stringify(filename));
-                return null;
-            }
-            if (cands.length > 1) {
-                console.warn("[LibraryTweaks] rename: ambiguous (" + cands.length + " matches for " + JSON.stringify(filename) + ")");
-                return null;
-            }
-            return cands[0];
+            return download;
         } catch (e) {
             console.warn("[LibraryTweaks] rename: resolve failed:", e);
             return null;
@@ -558,7 +594,7 @@
         };
         const observer = new MutationObserver(() => {
             applyGroup(section);
-            scheduleMarkMissing(section);
+            scheduleSyncRows(section);
         });
         try {
             section.addEventListener("contextmenu", onContextMenu, true);
@@ -566,7 +602,7 @@
             observer.observe(results, { childList: true, subtree: true });
         } catch (e) { return; }
         state.sections.set(section, { observer, onContextMenu });
-        scheduleMarkMissing(section);
+        scheduleSyncRows(section);
     }
 
     function detachSection(section) {
@@ -586,32 +622,16 @@
     function scanDocument() {
         ensureNativeMenuItem();
         if (dimOn()) ensureDimStyle();
-        else {
-            removeDimStyle();
-            clearMissingMarks();
-        }
+        else removeDimStyle();
+        const watchRows = dimOn() || systemOn();
         for (const section of document.querySelectorAll?.("zen-library-downloads-section") || []) {
-            if (systemOn()) attachSection(section);
+            if (watchRows) attachSection(section);
             else detachSection(section);
         }
+        if (!watchRows) clearRowOverrides();
         if (!renameOn()) {
             try { document.getElementById(MENU_ITEM_ID)?.remove(); } catch (e) { }
         }
-    }
-
-    // Checked flags pin verdicts onto live nodes; reset them only when the dim
-    // toggle itself flips, never on the mutation path.
-    function refreshDimMarks() {
-        if (!dimOn()) return;
-        try {
-            for (const section of document.querySelectorAll?.("zen-library-downloads-section") || []) {
-                try {
-                    section.querySelectorAll?.(".zen-library-row")
-                        .forEach(row => { delete row._ltMissingChecked; });
-                } catch (e) { }
-                scheduleMarkMissing(section);
-            }
-        } catch (e) { }
     }
 
     function init() {
@@ -623,23 +643,13 @@
         } catch (e) {
             state.docObserver = null;
         }
-        for (const pref of [PREF_SYSTEM, PREF_RENAME]) {
+        for (const pref of [PREF_SYSTEM, PREF_RENAME, PREF_DIM]) {
             const observer = { observe: () => scanDocument() };
             try {
                 Services.prefs.addObserver(pref, observer);
                 state.prefObservers.push([pref, observer]);
             } catch (e) { }
         }
-        const dimObserver = {
-            observe: () => {
-                scanDocument();
-                refreshDimMarks();
-            },
-        };
-        try {
-            Services.prefs.addObserver(PREF_DIM, dimObserver);
-            state.prefObservers.push([PREF_DIM, dimObserver]);
-        } catch (e) { }
     }
 
     init();
