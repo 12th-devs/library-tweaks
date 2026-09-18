@@ -376,14 +376,98 @@ zen-library-media-section .empty-state p {
     }
 }
 
-/* Sidebar tab: sprite box hidden, simple film-strip glyph injected instead. */
+/* Sidebar tab: reference animated glyph (see _mediaTabIconSvg). */
 .zen-library-tab[data-section="media"] .zen-library-tab-icon-image {
     display: none;
 }
 
-.zen-library-tab[data-section="media"] .zen-media-tab-icon {
+.zen-library-tab[data-section="media"] .zen-media-icon {
     width: 28px;
     height: 28px;
     display: block;
 }
 
+@media (prefers-reduced-motion: no-preference) {
+    :is(.zen-library-tab[data-section="media"][active],
+        .zen-library-tab[data-section="media"][animate]) .zen-media-back-card {
+        animation: zenMediaBackBounce 0.583s forwards;
+    }
+
+    :is(.zen-library-tab[data-section="media"][active],
+        .zen-library-tab[data-section="media"][animate]) .zen-media-front-card {
+        animation: zenMediaFrontBounce 0.583s forwards;
+    }
+
+    :is(.zen-library-tab[data-section="media"][active],
+        .zen-library-tab[data-section="media"][animate]) .zen-media-sun {
+        animation: zenMediaSunBounce 0.583s forwards;
+    }
+}
+
+
+@keyframes zenMediaBackBounce {
+  0% {
+    transform: translate(54.799px, 57.743px) rotate(-7deg) translate(-46.27px, -36.445px);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  }
+  24.41% {
+    transform: translate(57.299px, 65.243px) rotate(3deg) translate(-46.27px, -36.445px);
+    animation-timing-function: cubic-bezier(0.3, 0, 0.8, 1);
+  }
+  43.67% {
+    transform: translate(56.16px, 47.803px) rotate(-18.58deg) translate(-46.27px, -36.445px);
+    animation-timing-function: cubic-bezier(0.16, 0, 0.8, 1);
+  }
+  78.21% {
+    transform: translate(55.25px, 54.3px) rotate(-3.2deg) translate(-46.27px, -36.445px);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  100% {
+    transform: translate(54.799px, 57.743px) rotate(-7deg) translate(-46.27px, -36.445px);
+  }
+}
+
+@keyframes zenMediaFrontBounce {
+  0% {
+    transform: translate(78.827px, 77.737px) rotate(0deg) translate(-46.27px, -36.445px);
+    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
+  }
+  24.41% {
+    transform: translate(78.827px, 80.737px) rotate(0deg) translate(-46.27px, -36.445px);
+    animation-timing-function: cubic-bezier(0.4, 0, 0.64, 1);
+  }
+  55.88% {
+    transform: translate(75.827px, 62.61px) rotate(16.32deg) translate(-46.27px, -36.445px);
+    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
+  }
+  88.24% {
+    transform: translate(78.827px, 77.737px) rotate(0deg) translate(-46.27px, -36.445px);
+    animation-timing-function: linear;
+  }
+  100% {
+    transform: translate(78.827px, 77.737px) rotate(0deg) translate(-46.27px, -36.445px);
+  }
+}
+
+@keyframes zenMediaSunBounce {
+  0% { /* Frame 1 */
+    transform: translate(64.76px, 67.886px) translate(-9.914px, -9.984px);
+    animation-timing-function: cubic-bezier(0.32, 0, 0.67, 1);
+  }
+  24.41% { /* Frame 11 - Dips down */
+    transform: translate(64.76px, 73.606px) translate(-9.914px, -9.984px);
+    animation-timing-function: linear;
+  }
+  35.29% { /* Frame 13 - Brief hold before launch */
+    transform: translate(64.76px, 73.606px) translate(-9.914px, -9.984px);
+    animation-timing-function: cubic-bezier(0.35, 0, 0.76, 0.72);
+  }
+  55.88% { /* Frame 20 - Shoots out */
+    transform: translate(61.737px, 51.974px) translate(-9.914px, -9.984px);
+    /* Negative handle creates the rubber-band gravity snap */
+    animation-timing-function: cubic-bezier(0.21, -0.71, 0.45, 1);
+  }
+  100% { /* Frame 35 */
+    transform: translate(64.76px, 67.886px) translate(-9.914px, -9.984px);
+  }
+}

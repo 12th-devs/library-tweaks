@@ -3692,7 +3692,6 @@ zen-library-bookmarks-section .library-list-container .library-list-item {
   gap: 14px;
   padding: 0 12px;
   height: 48px;
-  margin: 0 8px 2px;
   border-radius: 16px;
   cursor: pointer;
   transition: all 0.2s;
