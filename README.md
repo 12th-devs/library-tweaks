@@ -34,7 +34,8 @@ needed — and turning it back on re-registers everything the same way.
   captures, your Screenshots folder and optional extra folders
   (`zen.library.media.user-dirs`, semicolon-separated absolute paths).
 - Masonry grid with type pills, location chips and search; video duration and
-  GIF badges; audio cover art with click-to-play and progress.
+  GIF badges; audio cover art with click-to-play and progress. The tab grows
+  the panel like native Spaces and lays out three columns.
 - Cards drag to the filesystem, copy, rename (downloads) and delete;
   right-click menu with open/show/hide options.
 - Newest download-history items paint first while the folder walk fills in the
@@ -46,6 +47,15 @@ needed — and turning it back on re-registers everything the same way.
   arrangement is remembered across restarts (`zen.library.tweaks.sidebar.order`).
 - The **Drag sidebar tabs to rearrange sections** toggle
   (`zen.library.tweaks.sidebar.reorder`, on by default) locks the tabs in place.
+
+## Shortcuts
+
+- **Ctrl+D (Cmd+D)** smart-saves the page
+  (`zen.library.tweaks.shortcut.save`, on by default). Off hands the key back
+  to the native bookmark panel.
+- **Ctrl+H (Cmd+H)** opens the native Library on History
+  (`zen.library.tweaks.shortcut.history`, on by default). Off hands the key
+  back to Firefox.
 
 ## History — `zen.library.tweaks.history.menu`
 

@@ -4125,6 +4125,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         }
 
         _onAddBookmarkCommand(event) {
+            if (!this._isSaveShortcutEnabled()) return;
             this._saveCurrentPage(event);
         }
 
@@ -4169,14 +4170,52 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             const isSidebarShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             const isBookmarksShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey && !e.altKey;
             const isSaveShortcut = e.code === "KeyD" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
+            const isHistoryShortcut = e.code === "KeyH" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             if (isSaveShortcut) {
+                if (!this._isSaveShortcutEnabled()) return;
                 this._saveCurrentPage(e);
+                return;
+            }
+            if (isHistoryShortcut) {
+                if (!this._isHistoryShortcutEnabled()) return;
+                this._openHistory(e);
                 return;
             }
             if (isSidebarShortcut || isBookmarksShortcut) {
                 this._lastSidebarKeyAt = Date.now();
                 this._openBookmarks(e);
             }
+        }
+
+        _isSaveShortcutEnabled() {
+            try { return Services.prefs.getBoolPref("zen.library.tweaks.shortcut.save", true); }
+            catch (e) { return true; }
+        }
+
+        _isHistoryShortcutEnabled() {
+            try { return Services.prefs.getBoolPref("zen.library.tweaks.shortcut.history", true); }
+            catch (e) { return true; }
+        }
+
+        _openHistory(event) {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            event?.stopImmediatePropagation?.();
+            try {
+                const Ctor = customElements.get("zen-library");
+                if (Ctor && typeof Ctor.toggle === "function") {
+                    this._registerNativeWhenReady();
+                    Ctor.toggle("history");
+                    return true;
+                }
+            } catch (e) { }
+            try {
+                if (window.gZenLibrary?.openTab) {
+                    window.gZenLibrary.openTab("history");
+                    return true;
+                }
+            } catch (e) { }
+            return false;
         }
 
         _onUnload() {

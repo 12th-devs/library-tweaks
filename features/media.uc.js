@@ -258,14 +258,45 @@
             return true;
         }
 
-        // Two masonry columns at the default panel width; one when narrow.
-        // Unknown width (pre-layout) assumes the default panel.
+        // The media tab grows the panel and picks masonry columns from the
+        // grid's own width (2 at the default width, 3 grown). Unknown width
+        // (pre-layout) assumes the default panel.
         _columnCount() {
             try {
                 const width = this._container?.clientWidth || 0;
-                if (width > 0) return width >= 240 ? 2 : 1;
+                if (width > 0) {
+                    if (width >= 520) return 3;
+                    return width >= 240 ? 2 : 1;
+                }
             } catch (e) { }
             return 2;
+        }
+
+        // Rebuilds at the new column count after a panel width change. Called
+        // by the section element; no-ops unless the count actually changed, so
+        // resize observation cannot ping-pong. Settles through the width
+        // transition instead of rebuilding per frame.
+        _syncColumns() {
+            try {
+                if (!this._container?.isConnected) return;
+                const wrapper = this._container.querySelector(":scope > .media-masonry-wrapper");
+                if (!wrapper) return;
+                const rendered = wrapper.querySelectorAll(":scope > .media-masonry-column").length;
+                if (rendered === this._columnCount()) {
+                    clearTimeout(this._colTimer);
+                    this._colTimer = 0;
+                    return;
+                }
+                clearTimeout(this._colTimer);
+                this._colTimer = window.setTimeout(() => {
+                    this._colTimer = 0;
+                    try {
+                        if (!this._container?.isConnected) return;
+                        const list = this._listSource || this._scanCache;
+                        if (list) this._renderIfChanged(list);
+                    } catch (e) { }
+                }, 120);
+            } catch (e) { }
         }
 
         _setCount(count) {
@@ -2099,6 +2130,8 @@
             this._cancelProgress();
             clearInterval(this._watchTimer);
             this._watchTimer = 0;
+            clearTimeout(this._colTimer);
+            this._colTimer = 0;
             this._searchDebounce?.cancel();
             this._searchDebounce = null;
             this._roots = null;
@@ -2165,11 +2198,53 @@
             } catch (e) {
                 console.error("[LibraryTweaks] media native mount failed:", e);
             }
+            this._syncMediaWidth();
+            try {
+                this._mediaWidthRO?.disconnect?.();
+                this._mediaWidthRO = null;
+                const grid = this.querySelector?.(".media-grid");
+                if (grid && typeof ResizeObserver !== "undefined") {
+                    this._mediaWidthRO = new ResizeObserver(() => this._syncMediaWidth());
+                    this._mediaWidthRO.observe(grid);
+                }
+            } catch (e) { }
         }
         disconnectedCallback() {
             // Matches the reference behavior of stopping playback when leaving.
             try {
                 window.gZenLibraryBookmarksIntegration?._mediaModule?._stopCurrentAudio?.();
+            } catch (e) { }
+            try { this._mediaWidthRO?.disconnect?.(); } catch (e) { }
+            this._mediaWidthRO = null;
+            // Mirror native spaces: the wide panel belongs to this tab only.
+            try {
+                this.closest?.("zen-library")?.style
+                    ?.removeProperty("--zen-library-content-width");
+            } catch (e) { }
+        }
+
+        // Mirror native spaces (#updateLibraryWidth): side width plus a 3-column
+        // content estimate, set on the host so the panel grows with transition.
+        _syncMediaWidth() {
+            let host = null;
+            try { host = this.closest?.("zen-library") || null; } catch (e) { }
+            if (!host) return;
+            let sideW = 110;
+            try {
+                const side = host.querySelector?.("#zen-library-side");
+                if (side && window.windowUtils?.getBoundsWithoutFlushing) {
+                    sideW = Math.ceil(window.windowUtils.getBoundsWithoutFlushing(side).width) || 110;
+                }
+            } catch (e) { }
+            const target = sideW + 3 * 175 + 2 * 16 + 32;
+            try {
+                const current = parseFloat(host.style.getPropertyValue("--zen-library-content-width")) || 0;
+                if (Math.abs(current - target) > 1) {
+                    host.style.setProperty("--zen-library-content-width", `${target}px`);
+                }
+            } catch (e) { }
+            try {
+                window.gZenLibraryBookmarksIntegration?._mediaModule?._syncColumns?.();
             } catch (e) { }
         }
 
