@@ -295,31 +295,6 @@
                     title: "Pinned",
                 }));
             }
-            const pinButton = this.el("button", {
-                className: "easel-card-action pin",
-                type: "button",
-                title: pinned ? "Unpin" : "Pin",
-                onclick: (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    this._togglePin(entry);
-                }
-            }, [this.el("span", { "aria-hidden": "true" })]);
-            if (pinned) pinButton.toggleAttribute("active", true);
-            const renameButton = this.el("button", {
-                className: "easel-card-action rename",
-                type: "button",
-                title: "Rename",
-                onclick: (event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    this._renameEasel(entry).catch(() => { });
-                }
-            }, [this.el("span", { "aria-hidden": "true" })]);
-            card.appendChild(this.el("div", { className: "easel-card-actions" }, [
-                pinButton,
-                renameButton
-            ]));
             return card;
         }
 
@@ -1092,68 +1067,11 @@ zen-library-easels-section .easel-install-note {
   opacity: 0.55;
   max-width: 230px;
 }
-/* Better hover: lift the card and reveal quick actions. The bar shows on hover
-   and keyboard focus alike; buttons stop propagation so the card never opens. */
-zen-library-easels-section .easel-card {
-  transition: transform 150ms ease, box-shadow 150ms ease, background-color 120ms ease;
-}
-zen-library-easels-section .easel-card:hover:not(.easel-card-new) {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
-}
-zen-library-easels-section .easel-card-actions {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  display: none;
-  gap: 6px;
-  z-index: 2;
-}
-zen-library-easels-section .easel-card:hover .easel-card-actions,
-zen-library-easels-section .easel-card:focus-within .easel-card-actions {
-  display: flex;
-}
-zen-library-easels-section .easel-card-action {
-  appearance: none;
-  border: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: inherit;
-  background: light-dark(rgba(255, 255, 255, 0.85), rgba(20, 20, 20, 0.7));
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
-}
-zen-library-easels-section .easel-card-action:hover {
-  background: light-dark(#ffffff, #000000);
-}
-zen-library-easels-section .easel-card-action > span {
-  width: 14px;
-  height: 14px;
-  display: block;
-  background-color: currentColor;
-  mask-position: center;
-  mask-repeat: no-repeat;
-  mask-size: contain;
-}
-zen-library-easels-section .easel-card-action.pin > span {
-  mask-image: url("chrome://browser/skin/pin-12.svg");
-}
-zen-library-easels-section .easel-card-action.pin[active] {
-  color: var(--zen-primary-color, currentColor);
-}
-zen-library-easels-section .easel-card-action.rename > span {
-  mask-image: url("chrome://global/skin/icons/edit.svg");
-}
-/* Pinned boards carry a thumbtack in the top-left corner. */
+/* Pinned boards carry a thumbtack in the top-right corner. */
 zen-library-easels-section .easel-pin-badge {
   position: absolute;
-  top: 8px;
-  left: 8px;
+  top: 10px;
+  right: 10px;
   width: 16px;
   height: 16px;
   z-index: 2;
