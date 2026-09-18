@@ -20,6 +20,9 @@
     const EASELS_PREF = "zen.easels.enabled";
 
     class ZenLibraryEasels {
+        // Pinned board ids persist as a JSON array; pinning only reorders.
+        static PIN_PREF = "zen.easels.pinned";
+
         constructor(library) {
             this.library = library;
             this._easels = [];
@@ -27,6 +30,8 @@
             this._grid = null;
             this._searchDebounce = null;
             this._refreshing = false;
+            this._rerenderLaps = 0;
+            this._pinnedSet = new Set();
         }
 
         get el() { return this.library.el.bind(this.library); }
@@ -161,13 +166,18 @@
                 ? this._easels.filter(e => (e.title || "").toLowerCase().includes(term))
                 : this._easels;
 
+            // Pinned boards first (stable index order within each group).
+            this._pinnedSet = this._pinnedIds();
+            const pinned = visible.filter(e => this._pinnedSet.has(e.id));
+            const rest = visible.filter(e => !this._pinnedSet.has(e.id));
+
             if (!visible.length) {
                 grid.appendChild(this._empty(
                     term ? "No easels match" : "No easels yet",
                     term ? "Try a different search." : "Press Ctrl+Shift+E to start one."
                 ));
             } else {
-                for (const entry of visible) grid.appendChild(this._card(entry));
+                for (const entry of [...pinned, ...rest]) grid.appendChild(this._card(entry));
             }
         }
 
@@ -212,13 +222,56 @@
             return text.length > 20 ? `${text.slice(0, 20)}…` : text;
         }
 
+        _pinnedIds() {
+            try {
+                const raw = Services.prefs.getStringPref(ZenLibraryEasels.PIN_PREF, "[]");
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) return new Set(parsed.filter(id => typeof id === "string" && id));
+            } catch (e) { }
+            return new Set();
+        }
+
+        _isPinned(id) {
+            try { return this._pinnedSet?.has(id) || false; }
+            catch (e) { return false; }
+        }
+
+        _togglePin(entry) {
+            if (!entry?.id) return;
+            const pinned = this._pinnedIds();
+            if (pinned.has(entry.id)) pinned.delete(entry.id);
+            else pinned.add(entry.id);
+            try {
+                Services.prefs.setStringPref(ZenLibraryEasels.PIN_PREF, JSON.stringify([...pinned]));
+            } catch (e) { }
+            this._pinnedSet = pinned;
+            if (this._grid?.isConnected) {
+                try { this._fillGrid(this._grid); } catch (e) { }
+            }
+        }
+
+        async _renameEasel(entry) {
+            const store = this._store();
+            if (!store) return;
+            const current = entry.title || "Untitled Easel";
+            const value = { value: current };
+            const ok = Services.prompt.prompt(window, "Rename easel", "New name:", value, null, { value: false });
+            const title = ok ? value.value.trim() : "";
+            // A name that came back unchanged is not worth an index write and a
+            // full re-render of the grid.
+            if (!title || title === current) return;
+            await store.renameEasel(entry.id, title);
+            await this._reload();
+        }
+
         _card(entry) {
+            const pinned = this._isPinned(entry.id);
             const mark = this.el("div", { className: "easel-card-mark" });
             const squiggle = this.svg(this._squiggleSvg());
             if (squiggle) mark.appendChild(squiggle);
 
             const fullTitle = entry.title || "Untitled Easel";
-            return this.el("button", {
+            const card = this.el("button", {
                 className: "easel-card",
                 type: "button",
                 dataset: { id: entry.id },
@@ -236,6 +289,38 @@
                     ])
                 ])
             ]);
+            if (pinned) {
+                card.appendChild(this.el("div", {
+                    className: "easel-pin-badge",
+                    title: "Pinned",
+                }));
+            }
+            const pinButton = this.el("button", {
+                className: "easel-card-action pin",
+                type: "button",
+                title: pinned ? "Unpin" : "Pin",
+                onclick: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this._togglePin(entry);
+                }
+            }, [this.el("span", { "aria-hidden": "true" })]);
+            if (pinned) pinButton.toggleAttribute("active", true);
+            const renameButton = this.el("button", {
+                className: "easel-card-action rename",
+                type: "button",
+                title: "Rename",
+                onclick: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this._renameEasel(entry).catch(() => { });
+                }
+            }, [this.el("span", { "aria-hidden": "true" })]);
+            card.appendChild(this.el("div", { className: "easel-card-actions" }, [
+                pinButton,
+                renameButton
+            ]));
+            return card;
         }
 
         _squiggleSvg() {
@@ -433,6 +518,9 @@
             const popup = document.createXULElement("menupopup");
             popup.id = "zen-easels-context-menu";
 
+            const pinItem = document.createXULElement("menuitem");
+            pinItem.id = "zen-easels-ctx-pin";
+
             const openItem = document.createXULElement("menuitem");
             openItem.id = "zen-easels-ctx-open";
             openItem.setAttribute("label", "Open");
@@ -445,7 +533,7 @@
             deleteItem.id = "zen-easels-ctx-delete";
             deleteItem.setAttribute("label", "Delete");
 
-            popup.appendChild(openItem);
+            popup.appendChild(pinItem);
             popup.appendChild(renameItem);
             popup.appendChild(document.createXULElement("menuseparator"));
             popup.appendChild(deleteItem);
@@ -463,7 +551,7 @@
             // One popup is shared by every card, so the previous card's handlers have
             // to go before this card's are attached. Cloning each item over itself
             // drops them with the old node.
-            for (const id of ["zen-easels-ctx-open", "zen-easels-ctx-rename", "zen-easels-ctx-delete"]) {
+            for (const id of ["zen-easels-ctx-pin", "zen-easels-ctx-open", "zen-easels-ctx-rename", "zen-easels-ctx-delete"]) {
                 const el = document.getElementById(id);
                 if (el) el.replaceWith(el.cloneNode(true));
             }
@@ -474,19 +562,13 @@
                 });
             };
 
+            const pinItem = document.getElementById("zen-easels-ctx-pin");
+            if (pinItem) pinItem.setAttribute("label", this._isPinned(entry.id) ? "Unpin" : "Pin");
+            on("zen-easels-ctx-pin", () => this._togglePin(entry));
+
             on("zen-easels-ctx-open", () => this._openEasel(entry.id));
 
-            on("zen-easels-ctx-rename", async () => {
-                const current = entry.title || "Untitled Easel";
-                const value = { value: current };
-                const ok = Services.prompt.prompt(window, "Rename easel", "New name:", value, null, { value: false });
-                const title = ok ? value.value.trim() : "";
-                // A name that came back unchanged is not worth an index write and a
-                // full re-render of the grid.
-                if (!title || title === current) return;
-                await store.renameEasel(entry.id, title);
-                await this._reload();
-            });
+            on("zen-easels-ctx-rename", () => this._renameEasel(entry));
 
             on("zen-easels-ctx-delete", async () => {
                 const confirmed = Services.prompt.confirm(
@@ -1009,6 +1091,77 @@ zen-library-easels-section .easel-install-note {
   font-size: 11px;
   opacity: 0.55;
   max-width: 230px;
+}
+/* Better hover: lift the card and reveal quick actions. The bar shows on hover
+   and keyboard focus alike; buttons stop propagation so the card never opens. */
+zen-library-easels-section .easel-card {
+  transition: transform 150ms ease, box-shadow 150ms ease, background-color 120ms ease;
+}
+zen-library-easels-section .easel-card:hover:not(.easel-card-new) {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+zen-library-easels-section .easel-card-actions {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: none;
+  gap: 6px;
+  z-index: 2;
+}
+zen-library-easels-section .easel-card:hover .easel-card-actions,
+zen-library-easels-section .easel-card:focus-within .easel-card-actions {
+  display: flex;
+}
+zen-library-easels-section .easel-card-action {
+  appearance: none;
+  border: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: inherit;
+  background: light-dark(rgba(255, 255, 255, 0.85), rgba(20, 20, 20, 0.7));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+zen-library-easels-section .easel-card-action:hover {
+  background: light-dark(#ffffff, #000000);
+}
+zen-library-easels-section .easel-card-action > span {
+  width: 14px;
+  height: 14px;
+  display: block;
+  background-color: currentColor;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+}
+zen-library-easels-section .easel-card-action.pin > span {
+  mask-image: url("chrome://browser/skin/pin-12.svg");
+}
+zen-library-easels-section .easel-card-action.pin[active] {
+  color: var(--zen-primary-color, currentColor);
+}
+zen-library-easels-section .easel-card-action.rename > span {
+  mask-image: url("chrome://global/skin/icons/edit.svg");
+}
+/* Pinned boards carry a thumbtack in the top-left corner. */
+zen-library-easels-section .easel-pin-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 16px;
+  height: 16px;
+  z-index: 2;
+  pointer-events: none;
+  background-color: currentColor;
+  opacity: 0.75;
+  mask: url("chrome://browser/skin/pin-12.svg") center / contain no-repeat;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.4));
 }
 @keyframes zenEaselsBounce {
   0% {

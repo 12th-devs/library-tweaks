@@ -24,7 +24,11 @@ needed — and turning it back on re-registers everything the same way.
 
 - Lists the boards stored by the zen-easel mod in the native Zen Library.
 - Search filters the grid in place; the "+" card creates and opens a board.
-- Right-click a card for Open, Rename and Delete (delete animates out).
+- Right-click a card for Pin, Open, Rename and Delete (delete animates out).
+- Hovering (or keyboard-focusing) a card lifts it and reveals Pin and Rename
+  quick actions.
+- Pinned boards (`zen.easels.pinned`) move to the top of the section and carry
+  a thumbtack badge in the top-left corner. Pin from hover or context menu.
 - Opening a board closes the Library, like the other sections.
 - Without the zen-easel mod installed the section shows an empty state instead.
 
