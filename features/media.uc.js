@@ -258,18 +258,14 @@
             return true;
         }
 
-        // The media tab grows the panel (MEDIA_PANEL_WIDTH_PX) and picks masonry
-        // columns from the grid's own width. Unknown width (pre-layout) assumes
-        // the grown panel.
+        // Two masonry columns at the default panel width; one when narrow.
+        // Unknown width (pre-layout) assumes the default panel.
         _columnCount() {
             try {
                 const width = this._container?.clientWidth || 0;
-                if (width > 0) {
-                    if (width >= 520) return 3;
-                    return width >= 240 ? 2 : 1;
-                }
+                if (width > 0) return width >= 240 ? 2 : 1;
             } catch (e) { }
-            return 3;
+            return 2;
         }
 
         _setCount(count) {
@@ -2149,7 +2145,6 @@
             this._mounted = true;
             try { this.classList.add("zen-library-section"); } catch (e) { }
             try { this.dataset.section = "media"; } catch (e) { }
-            ZenLibraryMediaSectionElement._applyPanelWidth(this);
             const integration = window.gZenLibraryBookmarksIntegration;
             const module = integration?._ensureMediaModule?.();
             if (!module) {
@@ -2176,28 +2171,8 @@
             try {
                 window.gZenLibraryBookmarksIntegration?._mediaModule?._stopCurrentAudio?.();
             } catch (e) { }
-            ZenLibraryMediaSectionElement._clearPanelWidth(this);
         }
 
-        // Media wants a wider panel than the 418px default. The width is derived
-        // from --zen-library-content-width, so setting it on the host grows (and
-        // transitions) the panel; removing it shrinks back for other tabs.
-        static _panelHost(node) {
-            try { return node?.closest?.("zen-library") || null; }
-            catch (e) { return null; }
-        }
-        static _applyPanelWidth(node) {
-            try {
-                ZenLibraryMediaSectionElement._panelHost(node)?.style
-                    ?.setProperty("--zen-library-content-width", `${MEDIA_PANEL_WIDTH_PX}px`);
-            } catch (e) { }
-        }
-        static _clearPanelWidth(node) {
-            try {
-                ZenLibraryMediaSectionElement._panelHost(node)?.style
-                    ?.removeProperty("--zen-library-content-width");
-            } catch (e) { }
-        }
     }
 
     if (!customElements.get("zen-library-media-section")) {
@@ -2210,8 +2185,6 @@
 
     class ZenLibraryMediaSection {
         static render(library) {
-            // Set before first paint so the grid measures the grown panel.
-            ZenLibraryMediaSectionElement._applyPanelWidth(library);
             let html = null;
             try { html = window.gZenLibraryBookmarksIntegration?._nativeHtml?.(); } catch (e) { }
             if (html) {
@@ -2230,8 +2203,6 @@
     /* --------------------------------------- integration feature mixin */
 
     const MEDIA_PREF = "zen.media.enabled";
-    // Panel target while the media tab is showing (default is 418px).
-    const MEDIA_PANEL_WIDTH_PX = 700;
 
     const MediaIntegration = {
         _isMediaEnabled() {
@@ -2379,63 +2350,7 @@
         },
 
         _mediaTabIconSvg() {
-            return `
-<svg class="zen-media-icon" width="28" height="28" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <!-- Replaced the jagged clip-path with a precise dynamic Mask (same technique as spaces) -->
-    <mask id="zen-media-mask">
-      <rect x="-10" y="-10" width="148" height="148" fill="white" />
-      <!-- Black cutout precisely matches the front card's size and transform so they mask perfectly -->
-      <!-- The width/height match 85.439 + 7.1 stroke, rx matches 9.262 + 3.55 half-stroke -->
-      <g class="zen-media-front-card" transform="translate(78.827, 77.737) translate(-46.27, -36.445)">
-        <rect x="0" y="0" width="92.539" height="72.891" rx="12.812" fill="black" />
-      </g>
-    </mask>
-
-    <linearGradient gradientUnits="userSpaceOnUse" x1="64" y1="0" x2="64" y2="128" id="zen-media-grad-back">
-      <stop offset="0" style="stop-color: rgb(255, 255, 255)"/>
-      <stop offset="1" style="stop-color: rgb(0, 0, 0)"/>
-    </linearGradient>
-    <linearGradient gradientUnits="userSpaceOnUse" x1="64" y1="0" x2="64" y2="128" id="zen-media-grad-front">
-      <stop offset="0" style="stop-color: rgb(255, 255, 255)"/>
-      <stop offset="1" style="stop-color: rgb(0, 0, 0)"/>
-    </linearGradient>
-  </defs>
-
-  <!-- Back card -->
-  <!-- Wrapped in an untransformed group so the mask coordinates align globally (same as spaces) -->
-  <g class="zen-media-back-wrapper" mask="url(#zen-media-mask)">
-    <g class="zen-media-back-card" transform="translate(54.799, 57.743) rotate(-7) translate(-46.27, -36.445)">
-      <rect class="zen-media-bg" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-            style="fill: var(--zen-folder-front-bgcolor); fill-opacity: 0;" />
-      <rect class="zen-media-gradient" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-            style="fill: url(#zen-media-grad-back); fill-opacity: 0;" />
-      <rect class="zen-media-border" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-            style="fill: none; stroke: var(--zen-folder-stroke); stroke-width: 7.1px;" />
-    </g>
-  </g>
-
-  <!-- Front card (rect) -->
-  <g class="zen-media-front-card" transform="translate(78.827, 77.737) translate(-46.27, -36.445)">
-    <rect class="zen-media-bg" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-          style="fill: var(--zen-folder-front-bgcolor); fill-opacity: 0;" />
-    <rect class="zen-media-gradient" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-          style="fill: url(#zen-media-grad-front); fill-opacity: 0;" />
-    <!--Mountain (path)-->
-    <g class="zen-media-mountain" transform="translate(0.289, 32.609)">
-      <path class="zen-media-mountain-path" d="M7.432 21.147 L17.865 12.11 C19.665 10.596 21.373 9.862 23.173 9.862 C25.158 9.862 27.005 10.596 28.805 12.202 L36.191 18.853 L54.84 2.431 C56.779 0.734 58.81 0 61.072 0 C63.334 0 65.55 0.826 67.35 2.477 L84.568 18.67 L92 25.78 C92 35.23 87.153 40 77.551 40 L14.495 40 C4.801 40 0 35.275 0 25.78 Z"
-            style="fill: var(--zen-folder-stroke);" />
-    </g>
-    <rect class="zen-media-border" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-          style="fill: none; stroke: var(--zen-folder-stroke); stroke-width: 7.1px;" />
-  </g>
-
-  <!--Sun (circle)-->
-  <g class="zen-media-sun" transform="translate(64.76, 67.886) translate(-9.914, -9.984)">
-    <circle class="zen-media-sun-path" cx="9.914" cy="9.984" r="9.914"
-            style="fill: var(--zen-folder-stroke);" />
-  </g>
-</svg>`;
+            return `<svg class="zen-media-tab-icon" width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 3L8 8M16 3L15 8M22 8H2M6.8 21H17.2C18.8802 21 19.7202 21 20.362 20.673C20.9265 20.3854 21.3854 19.9265 21.673 19.362C22 18.7202 22 17.8802 22 16.2V7.8C22 6.11984 22 5.27976 21.673 4.63803C21.3854 4.07354 20.9265 3.6146 20.362 3.32698C19.7202 3 18.8802 3 17.2 3H6.8C5.11984 3 4.27976 3 3.63803 3.32698C3.07354 3.6146 2.6146 4.07354 2.32698 4.63803C2 5.27976 2 6.11984 2 7.8V16.2C2 17.8802 2 18.7202 2.32698 19.362C2.6146 19.9265 3.07354 20.3854 3.63803 20.673C4.27976 21 5.11984 21 6.8 21Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
         },
 
         _ensureMediaStyles(root) {
