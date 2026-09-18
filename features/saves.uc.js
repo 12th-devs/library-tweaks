@@ -4178,8 +4178,9 @@ zen-library-bookmarks-section .empty-state .empty-icon {
 
             const isSidebarShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             const isBookmarksShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey && !e.altKey;
-            const isSaveShortcut = e.code === "KeyJ" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
+            const isSaveShortcut = e.code === "KeyD" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             const isHistoryShortcut = e.code === "KeyH" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
+            const isDownloadsShortcut = e.code === "KeyJ" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             if (isSaveShortcut) {
                 if (!this._isSaveShortcutEnabled()) return;
                 this._saveCurrentPage(e);
@@ -4188,6 +4189,11 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             if (isHistoryShortcut) {
                 if (!this._isHistoryShortcutEnabled()) return;
                 this._openHistory(e);
+                return;
+            }
+            if (isDownloadsShortcut) {
+                if (!this._isDownloadsShortcutEnabled()) return;
+                this._openDownloads(e);
                 return;
             }
             if (isSidebarShortcut || isBookmarksShortcut) {
@@ -4206,6 +4212,11 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             catch (e) { return true; }
         }
 
+        _isDownloadsShortcutEnabled() {
+            try { return Services.prefs.getBoolPref("zen.library.tweaks.shortcut.downloads", true); }
+            catch (e) { return true; }
+        }
+
         _openHistory(event) {
             event?.preventDefault?.();
             event?.stopPropagation?.();
@@ -4221,6 +4232,27 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             try {
                 if (window.gZenLibrary?.openTab) {
                     window.gZenLibrary.openTab("history");
+                    return true;
+                }
+            } catch (e) { }
+            return false;
+        }
+
+        _openDownloads(event) {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            event?.stopImmediatePropagation?.();
+            try {
+                const Ctor = customElements.get("zen-library");
+                if (Ctor && typeof Ctor.toggle === "function") {
+                    this._registerNativeWhenReady();
+                    Ctor.toggle("downloads");
+                    return true;
+                }
+            } catch (e) { }
+            try {
+                if (window.gZenLibrary?.openTab) {
+                    window.gZenLibrary.openTab("downloads");
                     return true;
                 }
             } catch (e) { }

@@ -50,12 +50,15 @@ needed — and turning it back on re-registers everything the same way.
 
 ## Shortcuts
 
-- **Ctrl+J (Cmd+J)** smart-saves the page
+- **Ctrl+D (Cmd+D)** smart-saves the page
   (`zen.library.tweaks.shortcut.save`, on by default). Off hands the key back
   to the native bookmark panel.
 - **Ctrl+H (Cmd+H)** opens the native Library on History
   (`zen.library.tweaks.shortcut.history`, on by default). Off hands the key
   back to Firefox.
+- **Ctrl+J (Cmd+J)** opens the native Library on Downloads
+  (`zen.library.tweaks.shortcut.downloads`, on by default). Off hands the key
+  back.
 
 ## History — `zen.library.tweaks.history.menu`
 

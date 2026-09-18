@@ -77,7 +77,7 @@
   {
     "type": "checkbox",
     "property": "zen.library.tweaks.shortcut.save",
-    "label": "Ctrl+J (Cmd+J on macOS) smart-saves the page",
+    "label": "Ctrl+D (Cmd+D on macOS) smart-saves the page",
     "defaultValue": true
   },
   {
@@ -95,6 +95,18 @@
   {
     "type": "text",
     "label": "Takes over the history shortcut so it opens the native Library on History instead of the Firefox sidebar. Off hands the key back.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.shortcut.downloads",
+    "label": "Ctrl+J (Cmd+J on macOS) opens Library Downloads",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Takes over the downloads shortcut so it opens the native Library on Downloads. Off hands the key back.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },
