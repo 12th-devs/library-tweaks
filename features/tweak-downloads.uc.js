@@ -15,6 +15,8 @@
 (function () {
     const PREF_SYSTEM = "zen.library.tweaks.downloads.system";
     const PREF_RENAME = "zen.library.tweaks.downloads.rename";
+    const PREF_DIM = "zen.library.tweaks.downloads.dim-missing";
+    const DIM_STYLE_ID = "lt-downloads-dim-style";
     const SCAN_CACHE_TTL_MS = 30000;
     const SCAN_CHUNK_SIZE = 25;
     const HIST_CACHE_TTL_MS = 300000;
@@ -28,6 +30,99 @@
     };
     const systemOn = () => getBool(PREF_SYSTEM, false);
     const renameOn = () => getBool(PREF_RENAME, true);
+    const dimOn = () => getBool(PREF_DIM, true);
+
+    const DIM_CSS = `zen-library-downloads-section .zen-library-row[lt-missing] { opacity: 0.45; }`;
+
+    function ensureDimStyle() {
+        if (document.getElementById(DIM_STYLE_ID)) return;
+        const style = document.createElement("style");
+        style.id = DIM_STYLE_ID;
+        style.textContent = DIM_CSS;
+        try { document.documentElement.appendChild(style); } catch (e) { }
+    }
+
+    function removeDimStyle() {
+        try { document.getElementById(DIM_STYLE_ID)?.remove(); } catch (e) { }
+    }
+
+    function clearMissingMarks() {
+        try {
+            document.querySelectorAll?.("zen-library-downloads-section .zen-library-row[lt-missing]")
+                .forEach(n => n.removeAttribute("lt-missing"));
+        } catch (e) { }
+    }
+
+    // Grey out moved/missing files. Debounced per section and resolved against
+    // one unified snapshot per pass, so native re-render bursts stay cheap.
+    const markTimers = new WeakMap();
+    function scheduleMarkMissing(section) {
+        if (!dimOn() || markTimers.get(section)) return;
+        markTimers.set(section, window.setTimeout(() => {
+            markTimers.delete(section);
+            markMissingRows(section);
+        }, 750));
+    }
+
+    async function markMissingRows(section) {
+        if (!dimOn() || !section?.isConnected) return;
+        let rows = [];
+        try {
+            for (const row of section.querySelectorAll(".zen-library-row")) {
+                if (row.closest("." + GROUP_CLASS)) continue;
+                if (row._ltMissingChecked) continue;
+                rows.push(row);
+            }
+        } catch (e) { return; }
+        if (!rows.length) return;
+        const byName = new Map();
+        try {
+            for (const list of await unifiedLists()) {
+                let all = [];
+                try { all = await list.getAll(); } catch (e) { continue; }
+                for (const download of all) {
+                    let name = "";
+                    try { name = download.target?.path ? PathUtils.filename(download.target.path) : ""; }
+                    catch (e) { continue; }
+                    if (!name) continue;
+                    if (!byName.has(name)) byName.set(name, []);
+                    byName.get(name).push(download);
+                }
+            }
+        } catch (e) { return; }
+        const statCache = new Map();
+        const isMissing = async (download) => {
+            try {
+                if (download.deleted) return true;
+                const path = download.target?.path;
+                if (!path) return true;
+                if (download.target?.exists === false) return true;
+                if (statCache.has(path)) return statCache.get(path);
+                let missing = false;
+                try { await IOUtils.stat(path); }
+                catch (e) { missing = true; }
+                statCache.set(path, missing);
+                return missing;
+            } catch (e) {
+                return false;
+            }
+        };
+        for (const row of rows) {
+            if (!row.isConnected) continue;
+            row._ltMissingChecked = true;
+            const filename = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
+            const urlText = (row.querySelector(".zen-library-download-url")?.textContent || "").trim();
+            const cands = (byName.get(filename) || []).filter(d => {
+                try { return !urlText || String(d.source?.url || "").includes(urlText); }
+                catch (e) { return true; }
+            });
+            if (cands.length !== 1) continue;
+            try {
+                if (await isMissing(cands[0])) row.setAttribute("lt-missing", "");
+                else row.removeAttribute("lt-missing");
+            } catch (e) { }
+        }
+    }
 
     const normPath = (path) => String(path || "").replace(/\\/g, "/").toLowerCase();
 
@@ -369,6 +464,7 @@
         item.id = MENU_ITEM_ID;
         item.setAttribute("label", "Rename file");
         item.hidden = true;
+        separator.hidden = true;
         item.addEventListener("command", async () => {
             const download = item._ltDownload;
             if (!download?.target?.path) return;
@@ -407,8 +503,11 @@
             }
         });
         menu.append(separator, item);
+        menu._ltRenameItem = item;
+        menu._ltRenameSeparator = separator;
         menu.addEventListener("popupshowing", async () => {
             item.hidden = true;
+            separator.hidden = true;
             item._ltDownload = null;
             if (!renameOn()) return;
             // Our capture-phase record first, native [menu-open] marker second.
@@ -426,13 +525,14 @@
             }
             const download = await resolveNativeDownload(row);
             if (!download || !row.isConnected) return;
-            // Moved or missing files are not renamable.
+            // Moved or missing files are not renamable (no dangling divider).
             if (!(await downloadExists(download))) {
                 console.warn("[LibraryTweaks] rename: file missing, hiding");
                 return;
             }
             item._ltDownload = download;
             item.hidden = false;
+            menu._ltRenameSeparator.hidden = false;
         });
     }
 
@@ -456,13 +556,17 @@
                 section._ltMenuRow = row && section.contains(row) ? row : null;
             } catch (e) { }
         };
-        const observer = new MutationObserver(() => applyGroup(section));
+        const observer = new MutationObserver(() => {
+            applyGroup(section);
+            scheduleMarkMissing(section);
+        });
         try {
             section.addEventListener("contextmenu", onContextMenu, true);
             const results = section.querySelector?.(".zen-library-search-results") || section;
             observer.observe(results, { childList: true, subtree: true });
         } catch (e) { return; }
         state.sections.set(section, { observer, onContextMenu });
+        scheduleMarkMissing(section);
     }
 
     function detachSection(section) {
@@ -481,6 +585,11 @@
 
     function scanDocument() {
         ensureNativeMenuItem();
+        if (dimOn()) ensureDimStyle();
+        else {
+            removeDimStyle();
+            clearMissingMarks();
+        }
         for (const section of document.querySelectorAll?.("zen-library-downloads-section") || []) {
             if (systemOn()) attachSection(section);
             else detachSection(section);
@@ -488,6 +597,21 @@
         if (!renameOn()) {
             try { document.getElementById(MENU_ITEM_ID)?.remove(); } catch (e) { }
         }
+    }
+
+    // Checked flags pin verdicts onto live nodes; reset them only when the dim
+    // toggle itself flips, never on the mutation path.
+    function refreshDimMarks() {
+        if (!dimOn()) return;
+        try {
+            for (const section of document.querySelectorAll?.("zen-library-downloads-section") || []) {
+                try {
+                    section.querySelectorAll?.(".zen-library-row")
+                        .forEach(row => { delete row._ltMissingChecked; });
+                } catch (e) { }
+                scheduleMarkMissing(section);
+            }
+        } catch (e) { }
     }
 
     function init() {
@@ -506,6 +630,16 @@
                 state.prefObservers.push([pref, observer]);
             } catch (e) { }
         }
+        const dimObserver = {
+            observe: () => {
+                scanDocument();
+                refreshDimMarks();
+            },
+        };
+        try {
+            Services.prefs.addObserver(PREF_DIM, dimObserver);
+            state.prefObservers.push([PREF_DIM, dimObserver]);
+        } catch (e) { }
     }
 
     init();

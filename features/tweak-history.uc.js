@@ -30,10 +30,9 @@
         const { PlacesQuery } = ChromeUtils.importESModule("resource://gre/modules/PlacesQuery.sys.mjs");
         const query = new PlacesQuery();
         try {
-            // searchHistory reads lazily-initialized query options; native always
-            // calls observeHistory() first, and skipping it throws
-            // "this.cachedHistoryOptions is null". No-op observer is enough.
-            try { query.observeHistory(() => { }); } catch (e) { }
+            // searchHistory reads lazily-initialized options; prime them with a
+            // minimal getHistory first (native always primes this way too).
+            await query.getHistory({ daysOld: 120, limit: 1 });
             const found = await query.searchHistory(text, limit);
             if (Array.isArray(found)) return found;
             if (found?.values) return [...found.values()].flat();
@@ -41,6 +40,7 @@
         } finally {
             try { query.close(); } catch (e) { }
         }
+    }
     }
 
     function scoreVisit(visit, title, want) {

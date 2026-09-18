@@ -82,6 +82,9 @@ needed — and turning it back on re-registers everything the same way.
   Rename and Delete. Respects the native search term.
 - **Rename file** (`zen.library.tweaks.downloads.rename`): adds renaming to
   the native download menu, resolved against live downloads.
+- **Grey out moved or missing files**
+  (`zen.library.tweaks.downloads.dim-missing`): dims rows whose files are gone
+  from disk; those rows are also excluded from renaming.
 - File icons already resolve from the OS exactly like the classic library.
 
 ## Animation — `zen.library.tweaks.animation.switch`
