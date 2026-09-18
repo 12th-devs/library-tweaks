@@ -26,7 +26,7 @@ needed — and turning it back on re-registers everything the same way.
 - Search filters the grid in place; the "+" card creates and opens a board.
 - Right-click a card for Pin, Open, Rename and Delete (delete animates out).
 - Pinned boards (`zen.easels.pinned`) move to the top of the section and carry
-  a thumbtack badge in the top-right corner. Pin from the context menu.
+  a thumbtack badge in the top-left corner. Pin from the context menu.
 - Opening a board closes the Library, like the other sections.
 - Without the zen-easel mod installed the section shows an empty state instead.
 
@@ -91,11 +91,10 @@ needed — and turning it back on re-registers everything the same way.
 ## Downloads
 
 - **Also show files from the Downloads folder**
-  (`zen.library.tweaks.downloads.system`, off by default): publishes
-  top-level Downloads-folder files that have no history entry as real download
-  records, so native lists them chronologically with full open/menu/rename
-  behavior (hidden/partial skipped, folders skipped, never from private
-  windows). Turning it off pulls our entries back out.
+  (`zen.library.tweaks.downloads.system`, off by default): appends an
+  On this device group with top-level Downloads-folder files and folders that
+  have no history entry (hidden/partial skipped). Device rows offer Open, Show
+  in Folder, Rename and Delete, and respect the native search term.
 - **Rename file** (`zen.library.tweaks.downloads.rename`): adds renaming to
   the native download menu, resolved against live downloads.
 - **Grey out moved or missing files**

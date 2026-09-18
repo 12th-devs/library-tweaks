@@ -204,7 +204,7 @@
   },
   {
     "type": "text",
-    "label": "Publishes top-level Downloads-folder files that have no history entry as real download records, so native lists them chronologically with full open/menu/rename behavior (hidden/partial skipped, folders skipped, never from private windows). Turning it off pulls our entries back out. Folders are not shown.",
+    "label": "Appends an On this device group with top-level Downloads-folder files and folders that have no history entry (hidden/partial skipped), with Open, Show in Folder, Rename and Delete. Respects the native search term.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },

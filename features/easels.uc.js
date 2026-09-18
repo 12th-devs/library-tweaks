@@ -1073,11 +1073,11 @@ zen-library-easels-section .easel-install-note {
   opacity: 0.55;
   max-width: 230px;
 }
-/* Pinned boards carry a thumbtack in the top-right corner. */
+/* Pinned boards carry a thumbtack in the top-left corner. */
 zen-library-easels-section .easel-pin-badge {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 8px;
+  left: 8px;
   width: 16px;
   height: 16px;
   z-index: 2;
