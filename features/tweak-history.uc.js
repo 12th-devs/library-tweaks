@@ -41,7 +41,6 @@
             try { query.close(); } catch (e) { }
         }
     }
-    }
 
     function scoreVisit(visit, title, want) {
         if (!visit?.url) return 0;
