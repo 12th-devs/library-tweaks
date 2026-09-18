@@ -109,4 +109,7 @@ needed — and turning it back on re-registers everything the same way.
 
 ## Install
 
-Install as a Sine mod by copying this folder into your Zen profile `chrome/sine-mods` directory and enabling it in `mods.json`.
+1. In Zen, open Settings → Sine Mods and enable external JS.
+2. Paste `https://github.com/12th-devs/library-tweaks` into the install
+   section and install.
+3. Restart Zen when prompted.

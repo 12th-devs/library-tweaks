@@ -343,7 +343,7 @@
                 return card;
             }
 
-            card.appendChild(this.el("h3", { textContent: "Boards live in Zen Easel" }));
+            card.appendChild(this.el("h3", { textContent: "Boards live in Zen Easels" }));
             if (state === "disabled") {
                 card.appendChild(this.el("p", { textContent: "The zen-easel mod is installed but not enabled. Enable it and restart to keep boards here." }));
                 card.appendChild(this.el("button", {
@@ -361,17 +361,17 @@
                 return card;
             }
 
-            card.appendChild(this.el("p", { textContent: "Install the Zen Easel mod to capture, sketch and keep boards here." }));
+            card.appendChild(this.el("p", { textContent: "Install the Zen Easels mod to capture, sketch and keep boards here." }));
             card.appendChild(this.el("button", {
                 className: "easel-install-button",
                 type: "button",
                 onclick: () => {
-                    try { window.openTrustedLinkIn("https://sineorg.github.io/store", "tab"); } catch (e) { }
+                    try { window.openTrustedLinkIn("https://github.com/trashshii007/zen-easel", "tab"); } catch (e) { }
                 }
-            }, [this.el("span", { textContent: "Get Zen Easel" })]));
+            }, [this.el("span", { textContent: "Get Zen Easels" })]));
             card.appendChild(this.el("div", {
                 className: "easel-install-note",
-                textContent: "Opens the Sine store — search for Zen Easel, then come back here."
+                textContent: "Opens the Zen Easels GitHub page — install it, restart, then come back here."
             }));
             return card;
         }
