@@ -21,41 +21,71 @@
         .replace(/^https?:\/\/(www\.)?/i, "")
         .replace(/\/$/, "");
 
-    // Best-match visit for a row, or null. History URLs are unique enough that
-    // title + stripped-URL scoring resolves the right visit in practice.
-    async function resolveVisit(row) {
+    // Exact URLs cached from native drag payloads (no Places dependency).
+    const dragUrls = new WeakMap();
+    // In-flight / finished background resolutions per row.
+    const pendingRows = new WeakSet();
+
+    async function queryPlaces(text, limit = 30) {
+        const { PlacesQuery } = ChromeUtils.importESModule("resource://gre/modules/PlacesQuery.sys.mjs");
+        const query = new PlacesQuery();
+        try {
+            const found = await query.searchHistory(text, limit);
+            if (Array.isArray(found)) return found;
+            if (found?.values) return [...found.values()].flat();
+            return [];
+        } finally {
+            try { query.close(); } catch (e) { }
+        }
+    }
+
+    function scoreVisit(visit, title, want) {
+        if (!visit?.url) return 0;
+        const stripped = stripUrl(visit.url).toLowerCase();
+        let score = 0;
+        if (stripped === want) score += 10;
+        else if (stripped.includes(want) || want.includes(stripped)) score += 4;
+        else return 0;
+        if (title && String(visit.title || "").toLowerCase() === title.toLowerCase()) score += 5;
+        return score;
+    }
+
+    // Best-match visit for a row, or null with a logged reason. Tries the title
+    // query first, then falls back to the visible URL as the query.
+    async function resolveVisit(row, why = "menu") {
         try {
             const title = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
             const shown = (row.querySelector(".zen-library-row-subtitle")?.textContent || "").trim();
-            if (!shown) return null;
+            if (!shown) {
+                console.warn("[LibraryTweaks] history resolve: no subtitle in row (" + why + ")");
+                return null;
+            }
             const want = stripUrl(shown).toLowerCase();
-            const { PlacesQuery } = ChromeUtils.importESModule("resource://gre/modules/PlacesQuery.sys.mjs");
-            const query = new PlacesQuery();
-            let visits = [];
-            try {
-                const found = await query.searchHistory(title || shown, 30);
-                if (Array.isArray(found)) visits = found;
-                else if (found?.values) visits = [...found.values()].flat();
-            } finally {
-                try { query.close(); } catch (e) { }
-            }
-            let best = null;
-            let bestScore = 0;
-            for (const visit of visits) {
-                if (!visit?.url) continue;
-                const stripped = stripUrl(visit.url).toLowerCase();
-                let score = 0;
-                if (stripped === want) score += 10;
-                else if (stripped.includes(want) || want.includes(stripped)) score += 4;
-                else continue;
-                if (title && String(visit.title || "").toLowerCase() === title.toLowerCase()) score += 5;
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = visit;
+            const queries = [];
+            if (title) queries.push(title);
+            if (shown !== title) queries.push(shown);
+            for (const text of queries) {
+                let visits = [];
+                try { visits = await queryPlaces(text); }
+                catch (e) {
+                    console.warn("[LibraryTweaks] history resolve: search failed:", e);
+                    continue;
                 }
+                let best = null;
+                let bestScore = 0;
+                for (const visit of visits) {
+                    const score = scoreVisit(visit, title, want);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = visit;
+                    }
+                }
+                if (best) return best;
             }
-            return best;
+            console.warn("[LibraryTweaks] history resolve: no match for", JSON.stringify(shown.slice(0, 80)), "(" + why + ")");
+            return null;
         } catch (e) {
+            console.warn("[LibraryTweaks] history resolve failed:", e);
             return null;
         }
     }
@@ -102,8 +132,14 @@
     }
 
     async function showMenu(event, row) {
+        // Exact URL when this row was dragged before; otherwise resolve.
+        const dragged = dragUrls.get(row);
+        const visit = dragged ? { url: dragged } : await resolveVisit(row);
+        showMenuWithVisit(event, visit);
+    }
+
+    function showMenuWithVisit(event, visit) {
         const popup = ensurePopup();
-        const visit = await resolveVisit(row);
         const url = visit?.url || null;
         for (const id of ["lt-history-ctx-copy", "lt-history-ctx-forget-site", "lt-history-ctx-delete"]) {
             const item = document.getElementById(id);
@@ -143,22 +179,58 @@
 
     function attachSection(section) {
         if (!section || state.sections.has(section)) return;
+        // Native rows drag with the full URL in text/x-moz-url: cache it per row
+        // so the menu never needs Places for previously dragged rows.
+        const onDragStart = (event) => {
+            try {
+                const row = event.target?.closest?.(".zen-library-row");
+                if (!row || !section.contains(row)) return;
+                const payload = event.dataTransfer?.getData?.("text/x-moz-url") || "";
+                const url = payload.split("\n")[0].trim();
+                if (url) dragUrls.set(row, url);
+            } catch (e) { }
+        };
+        // Prefetch in the background on hover so right-click usually hits cache.
+        const onMouseOver = (event) => {
+            try {
+                if (!isOn()) return;
+                const row = event.target?.closest?.(".zen-library-row");
+                if (!row || !section.contains(row)) return;
+                if (dragUrls.has(row) || row._ltVisit !== undefined || pendingRows.has(row)) return;
+                pendingRows.add(row);
+                resolveVisit(row, "prefetch").then(visit => {
+                    row._ltVisit = visit || null;
+                }).catch(() => {
+                    row._ltVisit = null;
+                }).finally(() => {
+                    pendingRows.delete(row);
+                });
+            } catch (e) { }
+        };
         const handler = (event) => {
             if (!isOn()) return;
             const row = event.target?.closest?.(".zen-library-row");
             if (!row || !section.contains(row)) return;
             event.preventDefault();
             event.stopPropagation();
+            if (row._ltVisit) {
+                showMenuWithVisit(event, row._ltVisit);
+                return;
+            }
             showMenu(event, row);
         };
+        section.addEventListener("dragstart", onDragStart, true);
+        section.addEventListener("mouseover", onMouseOver);
         section.addEventListener("contextmenu", handler);
-        state.sections.set(section, handler);
+        state.sections.set(section, { onDragStart, onMouseOver, handler });
     }
 
     function detachSection(section) {
-        const handler = state.sections.get(section);
-        if (handler) {
-            try { section.removeEventListener("contextmenu", handler); } catch (e) { }
+        const handlers = state.sections.get(section);
+        if (handlers) {
+            try { section.removeEventListener("dragstart", handlers.onDragStart, true); } catch (e) { }
+            try { section.removeEventListener("mouseover", handlers.onMouseOver); } catch (e) { }
+            try { section.removeEventListener("contextmenu", handlers.handler); } catch (e) { }
             state.sections.delete(section);
         }
     }

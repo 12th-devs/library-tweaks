@@ -287,13 +287,20 @@
 
     /* ------------------------------------------------------- native rename */
 
+    // Resolved against the UNIFIED session+history list (DownloadHistoryList),
+    // so both fresh and previous-session rows match. HistoryDownload objects
+    // expose the same target.path/source.url shape and a refresh() mimic.
     async function resolveNativeDownload(row) {
         try {
             const filename = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
             const urlText = (row.querySelector(".zen-library-download-url")?.textContent || "").trim();
-            if (!filename) return null;
+            if (!filename) {
+                console.warn("[LibraryTweaks] rename: no title in row");
+                return null;
+            }
+            const { DownloadHistory } = ChromeUtils.importESModule("resource://gre/modules/DownloadHistory.sys.mjs");
             const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
-            const list = await Downloads.getList(Downloads.ALL);
+            const list = await DownloadHistory.getList({ type: Downloads.ALL });
             const all = await list.getAll();
             const cands = [];
             for (const download of all) {
@@ -307,8 +314,17 @@
                 if (urlText && !source.includes(urlText)) continue;
                 cands.push(download);
             }
-            return cands.length === 1 ? cands[0] : null;
+            if (!cands.length) {
+                console.warn("[LibraryTweaks] rename: no download matches", JSON.stringify(filename));
+                return null;
+            }
+            if (cands.length > 1) {
+                console.warn("[LibraryTweaks] rename: ambiguous (" + cands.length + " matches for " + JSON.stringify(filename) + ")");
+                return null;
+            }
+            return cands[0];
         } catch (e) {
+            console.warn("[LibraryTweaks] rename: resolve failed:", e);
             return null;
         }
     }
@@ -337,6 +353,11 @@
                 try { download.target.path = file.path; } catch (e) { }
                 try { await download.refresh?.(); } catch (e) { }
                 clearScanCache();
+                try {
+                    const row = document.querySelector("zen-library-downloads-section .zen-library-row[menu-open]");
+                    const titleEl = row?.querySelector(".zen-library-row-title");
+                    if (titleEl) titleEl.textContent = name;
+                } catch (e) { }
                 document.querySelector("zen-library")?.requestUpdate?.();
             } catch (e) {
                 console.error("[LibraryTweaks] rename failed:", e);
@@ -347,8 +368,19 @@
             item.hidden = true;
             item._ltDownload = null;
             if (!renameOn()) return;
-            const row = document.querySelector("zen-library-downloads-section .zen-library-row[menu-open]");
-            if (!row) return;
+            // Our capture-phase record first, native [menu-open] marker second.
+            let row = null;
+            for (const section of document.querySelectorAll?.("zen-library-downloads-section") || []) {
+                if (section._ltMenuRow?.isConnected) {
+                    row = section._ltMenuRow;
+                    break;
+                }
+            }
+            row ||= document.querySelector("zen-library-downloads-section .zen-library-row[menu-open]");
+            if (!row) {
+                console.warn("[LibraryTweaks] rename: no row for menu");
+                return;
+            }
             const download = await resolveNativeDownload(row);
             if (download && row.isConnected) {
                 item._ltDownload = download;
@@ -369,24 +401,32 @@
         if (!section) return;
         applyGroup(section);
         if (state.sections.has(section)) return;
+        // Record the row on the way in: the native [menu-open] marker is set by
+        // native code we don't control, so keep our own reference as primary.
+        const onContextMenu = (event) => {
+            try {
+                const row = event.target?.closest?.(".zen-library-row");
+                section._ltMenuRow = row && section.contains(row) ? row : null;
+            } catch (e) { }
+        };
         const observer = new MutationObserver(() => applyGroup(section));
         try {
+            section.addEventListener("contextmenu", onContextMenu, true);
             const results = section.querySelector?.(".zen-library-search-results") || section;
             observer.observe(results, { childList: true, subtree: true });
         } catch (e) { return; }
-        state.sections.set(section, observer);
+        state.sections.set(section, { observer, onContextMenu });
     }
 
     function detachSection(section) {
-        const observer = state.sections.get(section);
-        if (observer) {
-            try { observer.disconnect(); } catch (e) { }
+        const record = state.sections.get(section);
+        if (record) {
+            try { record.observer?.disconnect?.(); } catch (e) { }
+            try {
+                if (record.onContextMenu) section.removeEventListener("contextmenu", record.onContextMenu, true);
+            } catch (e) { }
             state.sections.delete(section);
         }
-        try {
-            section.querySelector?.(":scope ." + GROUP_CLASS)?.remove?.();
-        } catch (e) { }
-        // Also handle section-like roots for the query above.
         try {
             section.querySelectorAll?.("." + GROUP_CLASS).forEach(n => n.remove());
         } catch (e) { }

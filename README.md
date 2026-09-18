@@ -65,8 +65,11 @@ needed — and turning it back on re-registers everything the same way.
   an accent line (rows) or card outline follows the cursor while dragging over
   native spaces. Visual only; drops behave exactly as native.
 - **New space button** (`zen.library.tweaks.spaces.new-button`): a trailing
-  + tile opens workspace creation.
-- Complex gradients need no toggle: native already passes theme gradient
+  36px + tile (like the classic section) opens workspace creation.
+- **Re-apply workspace themes** (`zen.library.tweaks.spaces.themes`):
+  converges space cards onto the theme picker's latest gradient, primary and
+  text colors — complex multi-layer gradients included.
+- Complex gradients need no conversion: native already passes theme gradient
   strings through untouched, so richer gradients show up automatically when a
   gradient provider mod supplies them.
 

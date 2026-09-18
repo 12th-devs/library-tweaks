@@ -11,6 +11,7 @@
 (function () {
     const PREF_INDICATOR = "zen.library.tweaks.spaces.drop-indicator";
     const PREF_NEW_BUTTON = "zen.library.tweaks.spaces.new-button";
+    const PREF_THEMES = "zen.library.tweaks.spaces.themes";
     const STYLE_ID = "lt-spaces-tweaks-style";
     const LINE_ID = "lt-space-drop-line";
     const BUTTON_CLASS = "lt-new-space";
@@ -21,6 +22,7 @@
     };
     const indicatorOn = () => getBool(PREF_INDICATOR, true);
     const buttonOn = () => getBool(PREF_NEW_BUTTON, true);
+    const themesOn = () => getBool(PREF_THEMES, true);
 
     const CSS = `
 #${LINE_ID} {
@@ -40,32 +42,34 @@
   outline-offset: -2px;
   border-radius: 14px;
 }
-/* Trailing new-space tile. */
+/* Trailing new-space button, like the reference section: 36px circle. */
 .zen-library-spaces > .${BUTTON_CLASS} {
   flex: 0 0 auto;
-  align-self: stretch;
-  min-width: 64px;
+  align-self: center;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px dashed color-mix(in srgb, currentColor 40%, transparent);
-  border-radius: 14px;
-  background: transparent;
+  border-radius: 50%;
+  border: none;
+  padding: 0;
+  margin: 0 4px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
   color: inherit;
   font: inherit;
   cursor: pointer;
-  padding: 0 12px;
-  margin: 0;
 }
 .zen-library-spaces > .${BUTTON_CLASS}:hover {
-  border-color: color-mix(in srgb, currentColor 70%, transparent);
-  background: color-mix(in srgb, currentColor 8%, transparent);
+  background: color-mix(in srgb, currentColor 16%, transparent);
 }
 .zen-library-spaces > .${BUTTON_CLASS} > span {
-  font-size: 24px;
-  font-weight: 300;
-  line-height: 1;
-  opacity: 0.7;
+  width: 16px;
+  height: 16px;
+  display: block;
+  background-color: currentColor;
+  mask: url("chrome://browser/skin/zen-icons/plus.svg") center / contain no-repeat;
+  opacity: 0.8;
 }
 .zen-library-spaces > .${BUTTON_CLASS}:hover > span {
   opacity: 1;
@@ -201,7 +205,7 @@
                 button.title = "New space";
                 button.setAttribute("aria-label", "New space");
                 const plus = document.createElement("span");
-                plus.textContent = "+";
+                plus.setAttribute("aria-hidden", "true");
                 button.appendChild(plus);
                 button.addEventListener("click", (event) => {
                     event.preventDefault();
@@ -215,9 +219,55 @@
         } catch (e) { }
     }
 
+    // Re-applies workspace themes (gradient, primary, toolbar text, scheme)
+    // straight from the theme picker. Native paints these at render, but a
+    // render that raced picker init keeps stale defaults with no refresh —
+    // this converges it on every sync. Same values native would set, so when
+    // native is already correct these writes are no-ops. Complex multi-layer
+    // gradient strings pass through untouched, which is what makes richer
+    // provider gradients show up.
+    function syncSpaceThemes(section) {
+        if (!themesOn()) return;
+        let workspaces = null;
+        try {
+            const picker = window.gZenThemePicker;
+            const store = window.gZenWorkspaces;
+            if (!picker?.getGradientForWorkspace || !store?.getWorkspaces) return;
+            workspaces = store.getWorkspaces() || [];
+            if (!workspaces.length) return;
+            const byUuid = new Map(workspaces.map(ws => [ws?.uuid, ws]));
+            for (const card of section.querySelectorAll?.(".zen-library-space[data-uuid]") || []) {
+                const ws = byUuid.get(card.dataset.uuid);
+                if (!ws) continue;
+                let theme = null;
+                try { theme = picker.getGradientForWorkspace(ws); } catch (e) { continue; }
+                if (!theme) continue;
+                try {
+                    if (theme.gradient != null &&
+                        card.style.getPropertyValue("--zen-library-space-gradient") !== String(theme.gradient)) {
+                        card.style.setProperty("--zen-library-space-gradient", String(theme.gradient));
+                    }
+                    if (theme.primaryColor != null &&
+                        card.style.getPropertyValue("--zen-primary-color") !== String(theme.primaryColor)) {
+                        card.style.setProperty("--zen-primary-color", String(theme.primaryColor));
+                    }
+                    if (Array.isArray(theme.toolbarColor)) {
+                        const text = `rgba(${theme.toolbarColor.join(",")})`;
+                        if (card.style.getPropertyValue("--toolbox-textcolor") !== text) {
+                            card.style.setProperty("--toolbox-textcolor", text);
+                        }
+                    }
+                    const scheme = theme.isDarkMode === false ? "light" : "dark";
+                    if (card.style.colorScheme !== scheme) card.style.colorScheme = scheme;
+                } catch (e) { }
+            }
+        } catch (e) { }
+    }
+
     function attachSection(section) {
         if (!section) return;
         syncButton(section);
+        syncSpaceThemes(section);
         if (state.sections.has(section)) return;
         const over = (event) => onDragOver(section, event);
         const hide = () => hideLine();
@@ -265,7 +315,7 @@
         } catch (e) {
             state.docObserver = null;
         }
-        for (const pref of [PREF_INDICATOR, PREF_NEW_BUTTON]) {
+        for (const pref of [PREF_INDICATOR, PREF_NEW_BUTTON, PREF_THEMES]) {
             const observer = { observe: () => scanDocument() };
             try {
                 Services.prefs.addObserver(pref, observer);

@@ -133,6 +133,18 @@
     "margin": "0 0 8px 0"
   },
   {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.spaces.themes",
+    "label": "Re-apply workspace themes",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Keeps space cards on the theme picker's latest gradient, primary and text colors — including complex multi-layer gradients — converging renders that raced theme loading. Same values native would set, so it is a no-op when already correct.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
     "type": "text",
     "label": "Complex space gradients need no toggle: the native section already passes theme gradient strings through, so richer gradients appear automatically when a gradient provider (e.g. BetterZenGradientPicker) supplies them.",
     "size": "12px",
