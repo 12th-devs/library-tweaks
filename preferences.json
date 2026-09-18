@@ -204,7 +204,7 @@
   },
   {
     "type": "text",
-    "label": "Appends an On this device group with top-level Downloads-folder files and folders that have no history entry (hidden/partial skipped). Identical files are combined with the device copy winning: matching native rows hide (in-progress rows never hide) along with any emptied date groups.",
+    "label": "Publishes top-level Downloads-folder files that have no history entry as real download records, so native lists them chronologically with full open/menu/rename behavior (hidden/partial skipped, folders skipped, never from private windows). Turning it off pulls our entries back out. Folders are not shown.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },

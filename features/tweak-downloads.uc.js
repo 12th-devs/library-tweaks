@@ -3,9 +3,10 @@
 // Library Tweaks — Downloads enhancements for the native Zen Library.
 //
 // 1. System-wide downloads (toggle, default off, like the reference mod):
-//    an appended "On this device" group lists top-level files/folders from the
-//    OS Downloads folder that have no download-history entry. Append-only: it
-//    never touches Lit-managed nodes, and re-applies after native re-renders.
+//    top-level files from the OS Downloads folder that have no download-history
+//    entry are published as real history entries, so native lists them itself —
+//    chronologically, with working open/menus/rename — instead of a separate
+//    group. Folders are skipped (history holds files, not folders).
 // 2. Rename in the native context menu (toggle, default on): a "Rename file"
 //    item is appended to the native downloads popup, resolved against the
 //    live Downloads list, and applied on disk.
@@ -21,8 +22,8 @@
     const SCAN_CHUNK_SIZE = 25;
     const HIST_CACHE_TTL_MS = 300000;
     const MENU_ITEM_ID = "lt-downloads-ctx-rename";
-    const DISK_MENU_ID = "lt-disk-context-menu";
-    const GROUP_CLASS = "lt-disk-group";
+    const FABRICATED_PREF = "zen.library.tweaks.downloads.fabricated";
+    const DESTINATION_ANNO = "downloads/destinationFileURI";
 
     const getBool = (name, fallback) => {
         try { return Services.prefs.getBoolPref(name, fallback); }
@@ -48,14 +49,25 @@
 
     function clearRowOverrides() {
         try {
-            for (const row of document.querySelectorAll?.("zen-library-downloads-section .zen-library-row") || []) {
-                row.hidden = false;
-                row.removeAttribute("lt-missing");
-            }
-            for (const group of document.querySelectorAll?.("zen-library-downloads-section .zen-library-group") || []) {
-                if (!group.classList.contains(GROUP_CLASS)) group.hidden = false;
-            }
+            document.querySelectorAll?.("zen-library-downloads-section .zen-library-row[lt-missing]")
+                .forEach(n => n.removeAttribute("lt-missing"));
         } catch (e) { }
+    }
+
+    // Periodic publish driver: a fresh scan (at most every 30s) picks up files
+    // copied in while the tab sits open. Runs only while sections are mounted.
+    let publishTimer = 0;
+    function ensurePublishTimer() {
+        if (publishTimer || !systemOn()) return;
+        publishTimer = window.setInterval(() => {
+            if (!systemOn() || isPrivateWindow()) return;
+            try { scanDisk(); } catch (e) { }
+        }, 45000);
+    }
+
+    function clearPublishTimer() {
+        clearInterval(publishTimer);
+        publishTimer = 0;
     }
 
     // Filename index over the unified session+history snapshot, shared by one
@@ -104,15 +116,12 @@
         }
     }
 
-    // One debounced pass per section that reconciles native rows with disk truth:
-    //  - device override: a native row for a file also on disk hides, so
-    //    identical files combine with the device row winning (never live rows);
-    //  - moved/missing files grey out (dim pref).
-    // Attribute-only changes on Lit-owned nodes: Lit never binds hidden or
-    // lt-missing, so updates never fight these back.
+    // One debounced pass per section that dims moved/missing files (dim pref).
+    // Attribute-only changes on Lit-owned nodes: Lit never binds lt-missing,
+    // so updates never fight these back.
     const syncTimers = new WeakMap();
     function scheduleSyncRows(section) {
-        if ((!dimOn() && !systemOn()) || syncTimers.get(section)) return;
+        if (!dimOn() || syncTimers.get(section)) return;
         syncTimers.set(section, window.setTimeout(() => {
             syncTimers.delete(section);
             syncNativeRows(section);
@@ -120,18 +129,9 @@
     }
 
     async function syncNativeRows(section) {
-        if ((!dimOn() && !systemOn()) || !section?.isConnected) return;
+        if (!dimOn() || !section?.isConnected) return;
         const byName = await downloadIndex();
         if (!section.isConnected) return;
-        let diskKeys = null;
-        if (systemOn()) {
-            try {
-                diskKeys = new Set((await scanDisk()).map(i => normPath(i.targetPath)));
-            } catch (e) {
-                diskKeys = new Set();
-            }
-            if (!section.isConnected) return;
-        }
         const statCache = new Map();
         const isMissing = async (download) => {
             try {
@@ -151,20 +151,12 @@
         };
         try {
             for (const row of section.querySelectorAll(".zen-library-row")) {
-                if (!row.isConnected || row.closest("." + GROUP_CLASS)) continue;
+                if (!row.isConnected) continue;
                 if (rowIsLive(row)) {
-                    row.hidden = false;
                     row.removeAttribute("lt-missing");
                     continue;
                 }
                 const download = matchRowDownload(byName, row);
-                if (systemOn() && diskKeys && download?.target?.path &&
-                    diskKeys.has(normPath(download.target.path))) {
-                    row.hidden = true;
-                    row.removeAttribute("lt-missing");
-                    continue;
-                }
-                row.hidden = false;
                 if (dimOn() && download) {
                     try {
                         if (await isMissing(download)) row.setAttribute("lt-missing", "");
@@ -172,13 +164,6 @@
                 } else {
                     row.removeAttribute("lt-missing");
                 }
-            }
-            // Hide native groups emptied by shadowing so no bare headers linger.
-            for (const group of section.querySelectorAll(".zen-library-group")) {
-                if (group.classList.contains(GROUP_CLASS)) continue;
-                const visible = [...group.querySelectorAll(":scope > .zen-library-row")]
-                    .some(r => !r.hidden);
-                group.hidden = !visible;
             }
         } catch (e) { }
     }
@@ -191,24 +176,7 @@
         return file;
     }
 
-    // Same construction as the reference mod: moz-icon over the file: URI so
-    // special characters cannot swallow the ?size= parameter.
-    function fileIconUrl(path, size = 32) {
-        if (!path) return "";
-        try {
-            return "moz-icon://" + Services.io.newFileURI(nsFile(path)).spec + "?size=" + size;
-        } catch (e) {
-            return "";
-        }
-    }
 
-    function formatSize(bytes) {
-        const n = Number(bytes) || 0;
-        if (n <= 0) return "0 Bytes";
-        const units = ["Bytes", "KB", "MB", "GB", "TB"];
-        const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
-        return `${parseFloat((n / Math.pow(1024, i)).toFixed(1))} ${units[i]}`;
-    }
 
     /* ------------------------------------------------------- disk scan */
 
@@ -284,6 +252,7 @@
             }
             items.sort((a, b) => b.timestamp - a.timestamp);
             scanCache = { folder, at: Date.now(), items };
+            try { await publishDiskEntries(items); } catch (e) { }
             return items;
         })().finally(() => { scanPromise = null; });
         return scanPromise;
@@ -293,150 +262,104 @@
         scanCache = null;
     }
 
-    /* ------------------------------------------------------- disk group UI */
-
-    function openDiskItem(item) {
+    function fabricatedUrls() {
         try {
-            const file = nsFile(item.targetPath);
-            if (!file.exists()) return;
-            if (item.isFolder) file.reveal();
-            else file.launch();
+            const parsed = JSON.parse(Services.prefs.getStringPref(FABRICATED_PREF, "[]"));
+            if (Array.isArray(parsed)) return new Set(parsed.filter(u => typeof u === "string" && u));
+        } catch (e) { }
+        return new Set();
+    }
+
+    function rememberFabricated(url) {
+        try {
+            const set = fabricatedUrls();
+            set.add(url);
+            Services.prefs.setStringPref(FABRICATED_PREF, JSON.stringify([...set]));
         } catch (e) { }
     }
 
-    function ensureDiskMenu() {
-        let popup = document.getElementById(DISK_MENU_ID);
-        if (popup) return popup;
-        popup = document.createXULElement("menupopup");
-        popup.id = DISK_MENU_ID;
-        for (const [id, label] of [
-            ["lt-disk-ctx-open", "Open"],
-            ["lt-disk-ctx-show", "Show in Folder"],
-            ["lt-disk-ctx-rename", "Rename file"],
-            ["lt-disk-ctx-delete", "Delete"],
-        ]) {
-            const item = document.createXULElement("menuitem");
-            item.id = id;
-            item.setAttribute("label", label);
-            popup.appendChild(item);
-            if (id === "lt-disk-ctx-show") popup.appendChild(document.createXULElement("menuseparator"));
-        }
-        (document.getElementById("mainPopupSet") || document.body).appendChild(popup);
-        return popup;
-    }
-
-    function showDiskMenu(event, item, section) {
-        const popup = ensureDiskMenu();
-        for (const id of ["lt-disk-ctx-open", "lt-disk-ctx-show", "lt-disk-ctx-rename", "lt-disk-ctx-delete"]) {
-            const el = document.getElementById(id);
-            if (el) el.replaceWith(el.cloneNode(true));
-        }
-        const on = (id, handler) => {
-            document.getElementById(id)?.addEventListener("command", async () => {
-                try { await handler(); } catch (e) { console.error("[LibraryTweaks]", e); }
-            });
-        };
-        on("lt-disk-ctx-open", () => openDiskItem(item));
-        on("lt-disk-ctx-show", () => {
-            try { nsFile(item.targetPath).reveal(); } catch (e) { }
-        });
-        const fileOnly = !item.isFolder;
-        const renameEl = document.getElementById("lt-disk-ctx-rename");
-        const deleteEl = document.getElementById("lt-disk-ctx-delete");
-        if (renameEl) renameEl.hidden = !fileOnly;
-        if (deleteEl) deleteEl.hidden = !fileOnly;
-        on("lt-disk-ctx-rename", async () => {
-            const input = { value: item.filename };
-            const ok = Services.prompt.prompt(window, "Rename File", null, input, null, { value: false });
-            const name = ok ? input.value.trim() : "";
-            if (!name || name === item.filename) return;
-            try {
-                const file = nsFile(item.targetPath);
-                if (!file.exists()) return;
-                file.moveTo(file.parent, name);
-                item.filename = name;
-                item.targetPath = file.path;
-                item.id = "disk|" + normPath(file.path);
-                clearScanCache();
-                applyGroup(section);
-            } catch (e) { console.error("[LibraryTweaks] disk rename failed:", e); }
-        });
-        on("lt-disk-ctx-delete", async () => {
-            const confirmed = Services.prompt.confirm(window, "Delete File", `Delete "${item.filename}"? This cannot be undone.`);
-            if (!confirmed) return;
-            try {
-                const file = nsFile(item.targetPath);
-                if (file.exists()) file.remove(false);
-                clearScanCache();
-                applyGroup(section);
-            } catch (e) { console.error("[LibraryTweaks] disk delete failed:", e); }
-        });
-        popup.openPopupAtScreen(event.screenX, event.screenY, true);
-    }
-
-    function diskRow(item, section) {
-        const row = document.createElement("div");
-        row.className = "zen-library-row lt-disk-row";
-        row.tabIndex = 0;
-        row.title = item.targetPath;
-        const icon = document.createElement("img");
-        icon.className = "zen-library-row-icon";
-        icon.alt = "";
-        icon.src = fileIconUrl(item.targetPath);
-        const text = document.createElement("div");
-        text.className = "zen-library-row-text";
-        const title = document.createElement("span");
-        title.className = "zen-library-row-title";
-        title.textContent = item.filename;
-        const sub = document.createElement("span");
-        sub.className = "zen-library-row-subtitle";
-        sub.textContent = item.isFolder ? "Folder" : formatSize(item.size);
-        text.append(title, sub);
-        row.append(icon, text);
-        row.addEventListener("click", () => openDiskItem(item));
-        row.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") openDiskItem(item);
-        });
-        row.addEventListener("contextmenu", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            showDiskMenu(event, item, section);
-        });
-        return row;
-    }
-
-    // Append-only group at the end of native results. Signature-guarded so our
-    // own insertions never retrigger the observer loop.
-    async function applyGroup(section) {
-        const results = section.querySelector?.(".zen-library-search-results");
-        if (!results) return;
-        if (!systemOn()) {
-            results.querySelector(":scope > ." + GROUP_CLASS)?.remove();
-            return;
-        }
-        if (section._ltApplying) return;
-        section._ltApplying = true;
+    function forgetFabricated(url) {
         try {
-            const filter = (section.querySelector?.(".zen-library-search-box input")?.value || "").trim().toLowerCase();
-            const items = await scanDisk();
-            if (!results.isConnected) return;
-            const visible = filter ? items.filter(i => i.filename.toLowerCase().includes(filter)) : items;
-            const sig = filter + "\n" + visible.map(i => i.id).join("\n");
-            const existing = results.querySelector(":scope > ." + GROUP_CLASS);
-            if (existing?.dataset.sig === sig) return;
-            existing?.remove();
-            if (!visible.length) return;
-            const group = document.createElement("div");
-            group.className = "zen-library-group " + GROUP_CLASS;
-            group.dataset.sig = sig;
-            const header = document.createElement("h3");
-            header.textContent = "On this device";
-            group.appendChild(header);
-            for (const item of visible) group.appendChild(diskRow(item, section));
-            results.appendChild(group);
-        } finally {
-            section._ltApplying = false;
+            const set = fabricatedUrls();
+            if (set.delete(url)) Services.prefs.setStringPref(FABRICATED_PREF, JSON.stringify([...set]));
+        } catch (e) { }
+    }
+
+    function isPrivateWindow() {
+        try {
+            const { PrivateBrowsingUtils } = ChromeUtils.importESModule("resource://gre/modules/PrivateBrowsingUtils.sys.mjs");
+            return PrivateBrowsingUtils.isWindowPrivate(window);
+        } catch (e) {
+            return false;
         }
+    }
+
+    // Publishes disk files as real download-history entries (visit + metadata
+    // annotations), so native lists them chronologically with full behavior.
+    // Skips folders (history holds files), private windows (never write shared
+    // history from one), and anything already recorded.
+    async function publishDiskEntries(items) {
+        if (!systemOn() || isPrivateWindow()) return;
+        const fabricated = fabricatedUrls();
+        let changed = false;
+        const { DownloadHistory } = ChromeUtils.importESModule("resource://gre/modules/DownloadHistory.sys.mjs");
+        const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
+        let n = 0;
+        for (const item of items) {
+            if (item.isFolder) continue;
+            let fileURI = "";
+            try { fileURI = Services.io.newFileURI(nsFile(item.targetPath)).spec; }
+            catch (e) { continue; }
+            if (fabricated.has(fileURI)) continue;
+            const download = {
+                source: { url: fileURI, originalUrl: fileURI, isPrivate: false },
+                target: { path: item.targetPath, size: item.size },
+                startTime: item.timestamp,
+                endTime: item.timestamp,
+                stopped: true,
+                succeeded: true,
+                deleted: false,
+                error: null,
+            };
+            try {
+                await DownloadHistory.addDownloadToHistory(download);
+                await DownloadHistory.updateMetaData(download);
+                let ok = false;
+                try { ok = !!(await PlacesUtils.history.fetch(fileURI)); }
+                catch (e) { }
+                if (ok) {
+                    rememberFabricated(fileURI);
+                    fabricated.add(fileURI);
+                    changed = true;
+                } else {
+                    console.warn("[LibraryTweaks] system: store rejected", item.filename);
+                }
+            } catch (e) {
+                console.warn("[LibraryTweaks] system: publish failed for", item.filename, e);
+            }
+            if (++n % 25 === 0) await new Promise(r => window.setTimeout(r, 0));
+        }
+        if (changed) {
+            histCache = null;
+            unifiedCache = null;
+        }
+    }
+
+    // Removes everything we published. Best effort: entries stay gone because
+    // the Places result observer drops their rows automatically.
+    async function unpublishDiskEntries() {
+        const fabricated = fabricatedUrls();
+        if (!fabricated.size) return;
+        try {
+            const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
+            for (const url of fabricated) {
+                try { await PlacesUtils.history.remove(url); } catch (e) { }
+            }
+        } catch (e) { }
+        try { Services.prefs.setStringPref(FABRICATED_PREF, "[]"); } catch (e) { }
+        histCache = null;
+        unifiedCache = null;
+        clearScanCache();
     }
 
     /* ------------------------------------------------------- native rename */
@@ -512,6 +435,9 @@
             try {
                 const file = nsFile(download.target.path);
                 if (!file.exists()) return;
+                const oldNorm = normPath(download.target.path);
+                const sourceUrl = String(download.source?.url || "");
+                const wasFabricated = !!sourceUrl && fabricatedUrls().has(sourceUrl);
                 file.moveTo(file.parent, name);
                 // Point the (shared, native-rendered) object at the new path and
                 // verify the write stuck; refresh() then notifies native's views
@@ -522,6 +448,28 @@
                     stuck = download.target.path === file.path;
                 } catch (e) {
                     console.warn("[LibraryTweaks] rename: target.path not writable:", e);
+                }
+                // Fabricated entries persist in Places: move the destination
+                // annotation too or the old path resurrects on reopen.
+                if (wasFabricated) {
+                    try {
+                        const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
+                        const newFileURI = Services.io.newFileURI(file).spec;
+                        let guid = null;
+                        try { guid = (await PlacesUtils.history.fetch(sourceUrl))?.guid || null; }
+                        catch (e) { }
+                        await PlacesUtils.history.update({
+                            annotations: new Map([[DESTINATION_ANNO, newFileURI]]),
+                            ...(guid ? { guid } : {}),
+                            url: sourceUrl,
+                        });
+                    } catch (e) {
+                        console.warn("[LibraryTweaks] rename: annotation update failed:", e);
+                    }
+                    try {
+                        histCache?.paths?.delete(oldNorm);
+                        histCache?.paths?.add(normPath(file.path));
+                    } catch (e) { }
                 }
                 try { await download.refresh?.(); } catch (e) {
                     console.warn("[LibraryTweaks] rename: refresh failed:", e);
@@ -582,7 +530,12 @@
 
     function attachSection(section) {
         if (!section) return;
-        applyGroup(section);
+        // Publishing happens through the scan cache: first mount scans (and
+        // publishes), later mounts reuse it until the TTL lapses.
+        if (systemOn()) {
+            try { scanDisk(); } catch (e) { }
+            ensurePublishTimer();
+        }
         if (state.sections.has(section)) return;
         // Record the row on the way in: the native [menu-open] marker is set by
         // native code we don't control, so keep our own reference as primary.
@@ -593,7 +546,6 @@
             } catch (e) { }
         };
         const observer = new MutationObserver(() => {
-            applyGroup(section);
             scheduleSyncRows(section);
         });
         try {
@@ -614,16 +566,25 @@
             } catch (e) { }
             state.sections.delete(section);
         }
-        try {
-            section.querySelectorAll?.("." + GROUP_CLASS).forEach(n => n.remove());
-        } catch (e) { }
+        if (!state.sections.size) clearPublishTimer();
     }
+
+    // Toggling system-wide off pulls everything we published back out of
+    // history (native drops those rows itself via its Places observer).
+    let lastSystemState = null;
 
     function scanDocument() {
         ensureNativeMenuItem();
         if (dimOn()) ensureDimStyle();
         else removeDimStyle();
-        const watchRows = dimOn() || systemOn();
+        const watching = systemOn();
+        if (lastSystemState === null) lastSystemState = watching;
+        if (lastSystemState && !watching) {
+            try { unpublishDiskEntries(); } catch (e) { }
+            clearScanCache();
+        }
+        lastSystemState = watching;
+        const watchRows = dimOn() || watching;
         for (const section of document.querySelectorAll?.("zen-library-downloads-section") || []) {
             if (watchRows) attachSection(section);
             else detachSection(section);
