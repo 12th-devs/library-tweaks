@@ -290,6 +290,27 @@
     // Resolved against the UNIFIED session+history list (DownloadHistoryList),
     // so both fresh and previous-session rows match. HistoryDownload objects
     // expose the same target.path/source.url shape and a refresh() mimic.
+    // Resolved against the SAME unified list instance native renders from
+    // (DownloadHistory.getList({type: PUBLIC}) is singleton-cached), so mutations
+    // land on native's own objects and refresh() notifies its views directly.
+    async function unifiedLists() {
+        const lists = [];
+        try {
+            const { DownloadHistory } = ChromeUtils.importESModule("resource://gre/modules/DownloadHistory.sys.mjs");
+            const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
+            lists.push(await DownloadHistory.getList({ type: Downloads.PUBLIC }));
+            try {
+                const { PrivateBrowsingUtils } = ChromeUtils.importESModule("resource://gre/modules/PrivateBrowsingUtils.sys.mjs");
+                if (PrivateBrowsingUtils.isWindowPrivate(window)) {
+                    lists.push(await DownloadHistory.getList({ type: Downloads.ALL }));
+                }
+            } catch (e) { }
+        } catch (e) {
+            console.warn("[LibraryTweaks] rename: download lists unavailable:", e);
+        }
+        return lists;
+    }
+
     async function resolveNativeDownload(row) {
         try {
             const filename = (row.querySelector(".zen-library-row-title")?.textContent || "").trim();
@@ -298,21 +319,21 @@
                 console.warn("[LibraryTweaks] rename: no title in row");
                 return null;
             }
-            const { DownloadHistory } = ChromeUtils.importESModule("resource://gre/modules/DownloadHistory.sys.mjs");
-            const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
-            const list = await DownloadHistory.getList({ type: Downloads.ALL });
-            const all = await list.getAll();
             const cands = [];
-            for (const download of all) {
-                let name = "";
-                let source = "";
-                try {
-                    name = download.target?.path ? PathUtils.filename(download.target.path) : "";
-                    source = String(download.source?.url || "");
-                } catch (e) { continue; }
-                if (name !== filename) continue;
-                if (urlText && !source.includes(urlText)) continue;
-                cands.push(download);
+            for (const list of await unifiedLists()) {
+                let all = [];
+                try { all = await list.getAll(); } catch (e) { continue; }
+                for (const download of all) {
+                    let name = "";
+                    let source = "";
+                    try {
+                        name = download.target?.path ? PathUtils.filename(download.target.path) : "";
+                        source = String(download.source?.url || "");
+                    } catch (e) { continue; }
+                    if (name !== filename) continue;
+                    if (urlText && !source.includes(urlText)) continue;
+                    if (!cands.includes(download)) cands.push(download);
+                }
             }
             if (!cands.length) {
                 console.warn("[LibraryTweaks] rename: no download matches", JSON.stringify(filename));
@@ -326,6 +347,16 @@
         } catch (e) {
             console.warn("[LibraryTweaks] rename: resolve failed:", e);
             return null;
+        }
+    }
+
+    async function downloadExists(download) {
+        try {
+            if (!download?.target?.path) return false;
+            await IOUtils.stat(download.target.path);
+            return true;
+        } catch (e) {
+            return false;
         }
     }
 
@@ -350,15 +381,27 @@
                 const file = nsFile(download.target.path);
                 if (!file.exists()) return;
                 file.moveTo(file.parent, name);
-                try { download.target.path = file.path; } catch (e) { }
-                try { await download.refresh?.(); } catch (e) { }
-                clearScanCache();
+                // Point the (shared, native-rendered) object at the new path and
+                // verify the write stuck; refresh() then notifies native's views
+                // so the section re-renders with the new name by itself.
+                let stuck = false;
+                try {
+                    download.target.path = file.path;
+                    stuck = download.target.path === file.path;
+                } catch (e) {
+                    console.warn("[LibraryTweaks] rename: target.path not writable:", e);
+                }
+                try { await download.refresh?.(); } catch (e) {
+                    console.warn("[LibraryTweaks] rename: refresh failed:", e);
+                }
                 try {
                     const row = document.querySelector("zen-library-downloads-section .zen-library-row[menu-open]");
                     const titleEl = row?.querySelector(".zen-library-row-title");
                     if (titleEl) titleEl.textContent = name;
                 } catch (e) { }
                 document.querySelector("zen-library")?.requestUpdate?.();
+                if (!stuck) console.warn("[LibraryTweaks] rename: name applied to row but may revert on next data refresh");
+                clearScanCache();
             } catch (e) {
                 console.error("[LibraryTweaks] rename failed:", e);
             }
@@ -382,10 +425,14 @@
                 return;
             }
             const download = await resolveNativeDownload(row);
-            if (download && row.isConnected) {
-                item._ltDownload = download;
-                item.hidden = false;
+            if (!download || !row.isConnected) return;
+            // Moved or missing files are not renamable.
+            if (!(await downloadExists(download))) {
+                console.warn("[LibraryTweaks] rename: file missing, hiding");
+                return;
             }
+            item._ltDownload = download;
+            item.hidden = false;
         });
     }
 
