@@ -2163,125 +2163,149 @@
 
     window.ZenLibraryMedia = ZenLibraryMedia;
 
-    /* ------------------------------------------------- native section wiring */
+    /* --------------------------------- native element content wiring */
 
-    class ZenLibraryMediaSectionElement extends HTMLElement {
-        constructor() {
-            super();
-            this._mounted = false;
-            this._library = null;
-        }
-        set library(value) { this._library = value; }
-        get library() { return this._library; }
-        connectedCallback() {
-            if (this._mounted) return;
-            this._mounted = true;
-            try { this.classList.add("zen-library-section"); } catch (e) { }
-            try { this.dataset.section = "media"; } catch (e) { }
-            // Capture the host NOW: after disconnect closest() finds nothing,
-            // which used to leak the wide panel onto every other tab.
-            try { this._panelHost = this.closest?.("zen-library") || null; } catch (e) { }
-            const integration = window.gZenLibraryBookmarksIntegration;
-            const module = integration?._ensureMediaModule?.();
-            if (!module) {
-                this.replaceChildren(document.createTextNode("Media unavailable"));
-                return;
-            }
-            try {
-                module.library = integration._nativeModuleShell(this);
-                this.replaceChildren();
-                let header = null;
-                try { header = module.renderHeaderControls(); }
-                catch (e) { console.error("[LibraryTweaks] media header failed:", e); }
-                if (header) this.appendChild(header);
-                let body = null;
-                try { body = module.render(); }
-                catch (e) { console.error("[LibraryTweaks] media grid failed:", e); }
-                if (body) this.appendChild(body);
-            } catch (e) {
-                console.error("[LibraryTweaks] media native mount failed:", e);
-            }
-            this._syncMediaWidth();
-            try {
-                this._mediaWidthRO?.disconnect?.();
-                this._mediaWidthRO = null;
-                const grid = this.querySelector?.(".media-grid");
-                if (grid && typeof ResizeObserver !== "undefined") {
-                    this._mediaWidthRO = new ResizeObserver(() => this._syncMediaWidth());
-                    this._mediaWidthRO.observe(grid);
-                }
-            } catch (e) { }
-        }
-        disconnectedCallback() {
-            // Matches the reference behavior of stopping playback when leaving.
-            try {
-                window.gZenLibraryBookmarksIntegration?._mediaModule?._stopCurrentAudio?.();
-            } catch (e) { }
-            try { this._mediaWidthRO?.disconnect?.(); } catch (e) { }
-            this._mediaWidthRO = null;
-            // Mirror native spaces: the wide panel belongs to this tab only.
-            // Uses the stored host: closest() is already null post-detach.
-            try {
-                (this._panelHost || null)?.style
-                    ?.removeProperty("--zen-library-content-width");
-            } catch (e) { }
-            this._panelHost = null;
-        }
+    // Upstream's media tab is an empty stub, so our scanned grid renders
+    // INSIDE the native <zen-library-media-section> element: its tag, sidebar
+    // tab, sprite icon and animations stay 100% native. Only what it renders
+    // is overridden, and only while this feature is enabled (otherwise the
+    // original stub render runs).
+    const NATIVE_MEDIA_TAG = "zen-library-media-section";
+    const nativeMediaOrig = {};
 
-        // Mirror native spaces (#updateLibraryWidth): side width plus a 3-column
-        // content estimate, set on the host so the panel grows with transition.
-        _syncMediaWidth() {
-            let host = null;
-            try { host = this._panelHost || this.closest?.("zen-library") || null; } catch (e) { }
-            if (!host) return;
-            try { this._panelHost = host; } catch (e) { }
-            let sideW = 110;
-            try {
-                const side = host.querySelector?.("#zen-library-side");
-                if (side && window.windowUtils?.getBoundsWithoutFlushing) {
-                    const measured = Math.ceil(window.windowUtils.getBoundsWithoutFlushing(side).width) || 0;
-                    // Sanity: a bogus measure must never wedge the panel huge.
-                    if (measured >= 50 && measured <= 300) sideW = measured;
-                }
-            } catch (e) { }
-            const target = sideW + 3 * 175 + 2 * 16 + 32;
-            try {
-                const current = parseFloat(host.style.getPropertyValue("--zen-library-content-width")) || 0;
-                if (Math.abs(current - target) > 1) {
-                    host.style.setProperty("--zen-library-content-width", `${target}px`);
-                }
-            } catch (e) { }
-            try {
-                window.gZenLibraryBookmarksIntegration?._mediaModule?._syncColumns?.();
-            } catch (e) { }
-        }
-
+    function nativeMediaCtor() {
+        try { return customElements.get(NATIVE_MEDIA_TAG) || null; }
+        catch (e) { return null; }
     }
 
-    if (!customElements.get("zen-library-tweaks-media-section")) {
+    function ltIntegration() {
+        try { return window.gZenLibraryBookmarksIntegration || null; }
+        catch (e) { return null; }
+    }
+
+    function syncMediaWidth(el) {
+        const integration = ltIntegration();
+        if (!integration?._isMediaEnabled?.()) return;
+        let host = null;
+        try { host = el._ltPanelHost || el.closest?.("zen-library") || null; } catch (e) { }
+        if (!host) return;
+        try { el._ltPanelHost = host; } catch (e) { }
+        let sideW = 110;
         try {
-            customElements.define("zen-library-tweaks-media-section", ZenLibraryMediaSectionElement);
-        } catch (e) {
-            console.error("[LibraryTweaks] failed to define media section element:", e);
-        }
+            const side = host.querySelector?.("#zen-library-side");
+            if (side && window.windowUtils?.getBoundsWithoutFlushing) {
+                const measured = Math.ceil(window.windowUtils.getBoundsWithoutFlushing(side).width) || 0;
+                // Sanity: a bogus measure must never wedge the panel huge.
+                if (measured >= 50 && measured <= 300) sideW = measured;
+            }
+        } catch (e) { }
+        const target = sideW + 3 * 175 + 2 * 16 + 32;
+        try {
+            const current = parseFloat(host.style.getPropertyValue("--zen-library-content-width")) || 0;
+            if (Math.abs(current - target) > 1) {
+                host.style.setProperty("--zen-library-content-width", `${target}px`);
+            }
+        } catch (e) { }
+        try {
+            integration._mediaModule?._syncColumns?.();
+        } catch (e) { }
     }
 
-    class ZenLibraryMediaSection {
-        static render(library) {
-            let html = null;
-            try { html = window.gZenLibraryBookmarksIntegration?._nativeHtml?.(); } catch (e) { }
-            if (html) {
-                return html`<zen-library-tweaks-media-section class="zen-library-section" data-section="media" .library=${library}></zen-library-tweaks-media-section>`;
-            }
-            const el = document.createElement("zen-library-tweaks-media-section");
-            try { el.library = library; } catch (e) { }
-            return el;
+    function mountNativeMediaContent(el, mount) {
+        const integration = ltIntegration();
+        const module = integration?._ensureMediaModule?.();
+        if (!module) {
+            mount.replaceChildren(document.createTextNode("Media unavailable"));
+            return;
         }
+        module.library = integration._nativeModuleShell(el);
+        mount.replaceChildren();
+        let header = null;
+        try { header = module.renderHeaderControls(); }
+        catch (e) { console.error("[LibraryTweaks] media header failed:", e); }
+        if (header) mount.appendChild(header);
+        let grid = null;
+        try { grid = module.render(); }
+        catch (e) { console.error("[LibraryTweaks] media grid failed:", e); }
+        if (grid) mount.appendChild(grid);
+        syncMediaWidth(el);
+        try {
+            el._ltWidthRO?.disconnect?.();
+            el._ltWidthRO = null;
+            const gridEl = mount.querySelector?.(".media-grid");
+            if (gridEl && typeof ResizeObserver !== "undefined") {
+                el._ltWidthRO = new ResizeObserver(() => syncMediaWidth(el));
+                el._ltWidthRO.observe(gridEl);
+            }
+        } catch (e) { }
     }
-    ZenLibraryMediaSection.id = "media";
-    // No upstream Fluent string exists; the sidebar label is patched to text.
-    ZenLibraryMediaSection.label = "library-media-section-title";
-    window.ZenLibraryMediaSection = ZenLibraryMediaSection;
+
+    function patchNativeMediaElement() {
+        const Ctor = nativeMediaCtor();
+        if (!Ctor || Ctor._ltPatched) return !!Ctor;
+        const proto = Ctor.prototype;
+        nativeMediaOrig.render = proto.render;
+        nativeMediaOrig.connectedCallback = proto.connectedCallback;
+        nativeMediaOrig.disconnectedCallback = proto.disconnectedCallback;
+        nativeMediaOrig.updated = proto.updated;
+
+        proto.render = function (...args) {
+            const integration = ltIntegration();
+            if (!integration?._isMediaEnabled?.()) {
+                return nativeMediaOrig.render.call(this, ...args);
+            }
+            let html = null;
+            try { html = integration._nativeHtml?.(); } catch (e) { }
+            if (!html) return nativeMediaOrig.render.call(this, ...args);
+            return html`<div class="lt-media-host"></div>`;
+        };
+
+        proto.connectedCallback = function (...args) {
+            try { nativeMediaOrig.connectedCallback?.call(this, ...args); } catch (e) { }
+            try {
+                const integration = ltIntegration();
+                if (!integration?._isMediaEnabled?.()) return;
+                try { this._ltPanelHost = this.closest?.("zen-library") || null; } catch (e) { }
+                const mount = this.querySelector?.(":scope > .lt-media-host");
+                if (mount && !mount.firstElementChild) mountNativeMediaContent(this, mount);
+            } catch (e) { }
+        };
+
+        proto.updated = function (changedProperties) {
+            try { nativeMediaOrig.updated?.call(this, changedProperties); } catch (e) { }
+            try {
+                const integration = ltIntegration();
+                if (!integration) return;
+                if (!integration._isMediaEnabled?.()) {
+                    try {
+                        this.closest?.("zen-library")?.style
+                            ?.removeProperty?.("--zen-library-content-width");
+                    } catch (e) { }
+                    return;
+                }
+                const mount = this.querySelector?.(":scope > .lt-media-host");
+                if (mount && !mount.firstElementChild) mountNativeMediaContent(this, mount);
+                syncMediaWidth(this);
+            } catch (e) { }
+        };
+
+        proto.disconnectedCallback = function (...args) {
+            try {
+                ltIntegration()?._mediaModule?._stopCurrentAudio?.();
+            } catch (e) { }
+            try { this._ltWidthRO?.disconnect?.(); } catch (e) { }
+            this._ltWidthRO = null;
+            try {
+                (this._ltPanelHost || null)?.style
+                    ?.removeProperty?.("--zen-library-content-width");
+            } catch (e) { }
+            this._ltPanelHost = null;
+            try { nativeMediaOrig.disconnectedCallback?.call(this, ...args); } catch (e) { }
+        };
+
+        Ctor._ltPatched = true;
+        return true;
+    }
 
     /* --------------------------------------- integration feature mixin */
 
@@ -2356,18 +2380,32 @@
             return this._mediaModule;
         },
 
+        // Native already owns sections.media: nothing to assign. Just make sure
+        // its element is patched, then styles + label.
+        _ensureNativeMediaPatched() {
+            if (patchNativeMediaElement()) return true;
+            if (!this._mediaWhenDefinedHooked) {
+                this._mediaWhenDefinedHooked = true;
+                try {
+                    customElements.whenDefined("zen-library-media-section").then(() => {
+                        try { patchNativeMediaElement(); } catch (e) { }
+                        try { this._connectExistingNativeLibraries(); } catch (e) { }
+                    }).catch(() => { });
+                } catch (e) { }
+            }
+            return !!nativeMediaCtor();
+        },
+
         _mediaRegister(host) {
-            if (!host || !this._isMediaEnabled?.()) return false;
-            if (!customElements.get("zen-library-tweaks-media-section")) return false;
+            if (!host) return false;
+            if (!this._ensureNativeMediaPatched()) return false;
+            if (!this._isMediaEnabled?.()) return false;
             const sections = host.zenLibrarySections;
             if (!sections || typeof sections !== "object") return false;
+            if (!sections.media || typeof sections.media.render !== "function") return false;
             let changed = false;
-            if (sections.media !== window.ZenLibraryMediaSection) {
-                sections.media = window.ZenLibraryMediaSection;
-                changed = true;
-            }
             try { if (this._sanitizeNativeTab?.(host)) changed = true; } catch (e) { }
-            try { this._mediaTabPatch(host); } catch (e) { }
+            try { if (this._mediaTabPatch(host)) changed = true; } catch (e) { }
             try {
                 const root = this._nativeRoot?.(host);
                 if (root) this._ensureMediaStyles(root);
@@ -2381,11 +2419,11 @@
         _mediaUnregister() {
             for (const host of Array.from(this._nativeHostObservers?.keys?.() || [])) {
                 try {
-                    const sections = host?.zenLibrarySections;
-                    if (sections?.media && sections.media === window.ZenLibraryMediaSection) {
-                        delete sections.media;
-                    }
+                    // Back on the stub: fold the tab away and drop the wide panel.
                     if (host?.activeTab === "media") host.activeTab = "history";
+                    try {
+                        host?.style?.removeProperty?.("--zen-library-content-width");
+                    } catch (e) { }
                 } catch (e) { }
                 try { host?.requestUpdate?.(); } catch (e) { }
             }
@@ -2393,8 +2431,8 @@
             this._mediaModule = null;
         },
 
-        // No upstream Fluent string and no shipped sprite asset: patch the label
-        // to text and inject the reference film-strip glyph.
+        // No upstream Fluent string exists, so the sidebar label is patched to
+        // text. Icon, sprite and animations stay 100% native.
         _mediaTabPatch(host) {
             let root = null;
             try { root = this._nativeRoot?.(host); } catch (e) { }
@@ -2411,86 +2449,10 @@
                 label.removeAttribute("data-l10n-id");
                 touched = true;
             }
-            const iconBox = tab.querySelector?.(".zen-library-tab-icon");
-            if (iconBox && !iconBox.querySelector(".zen-media-icon")) {
-                const icon = this._mediaTabIcon();
-                if (icon) iconBox.replaceChildren(icon);
-            }
             return touched;
         },
 
-        _mediaTabIcon() {
-            try {
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(this._mediaTabIconSvg(), "image/svg+xml");
-                const node = doc.documentElement;
-                if (!node || node.localName !== "svg") return null;
-                node.removeAttribute("xmlns");
-                return node;
-            } catch (e) {
-                return null;
-            }
-        },
 
-        _mediaTabIconSvg() {
-            return `
-<svg class="zen-media-icon" width="28" height="28" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <!-- Replaced the jagged clip-path with a precise dynamic Mask (same technique as spaces) -->
-    <mask id="zen-media-mask">
-      <rect x="-10" y="-10" width="148" height="148" fill="white" />
-      <!-- Black cutout precisely matches the front card's size and transform so they mask perfectly -->
-      <!-- The width/height match 85.439 + 7.1 stroke, rx matches 9.262 + 3.55 half-stroke -->
-      <g class="zen-media-front-card" transform="translate(78.827, 77.737) translate(-46.27, -36.445)">
-        <rect x="0" y="0" width="92.539" height="72.891" rx="12.812" fill="black" />
-      </g>
-    </mask>
-
-    <linearGradient gradientUnits="userSpaceOnUse" x1="64" y1="0" x2="64" y2="128" id="zen-media-grad-back">
-      <stop offset="0" style="stop-color: rgb(255, 255, 255)"/>
-      <stop offset="1" style="stop-color: rgb(0, 0, 0)"/>
-    </linearGradient>
-    <linearGradient gradientUnits="userSpaceOnUse" x1="64" y1="0" x2="64" y2="128" id="zen-media-grad-front">
-      <stop offset="0" style="stop-color: rgb(255, 255, 255)"/>
-      <stop offset="1" style="stop-color: rgb(0, 0, 0)"/>
-    </linearGradient>
-  </defs>
-
-  <!-- Back card -->
-  <!-- Wrapped in an untransformed group so the mask coordinates align globally (same as spaces) -->
-  <g class="zen-media-back-wrapper" mask="url(#zen-media-mask)">
-    <g class="zen-media-back-card" transform="translate(54.799, 57.743) rotate(-7) translate(-46.27, -36.445)">
-      <rect class="zen-media-bg" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-            style="fill: var(--zen-folder-front-bgcolor); fill-opacity: 0;" />
-      <rect class="zen-media-gradient" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-            style="fill: url(#zen-media-grad-back); fill-opacity: 0;" />
-      <rect class="zen-media-border" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-            style="fill: none; stroke: var(--zen-folder-stroke); stroke-width: 7.1px;" />
-    </g>
-  </g>
-
-  <!-- Front card (rect) -->
-  <g class="zen-media-front-card" transform="translate(78.827, 77.737) translate(-46.27, -36.445)">
-    <rect class="zen-media-bg" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-          style="fill: var(--zen-folder-front-bgcolor); fill-opacity: 0;" />
-    <rect class="zen-media-gradient" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-          style="fill: url(#zen-media-grad-front); fill-opacity: 0;" />
-    <!--Mountain (path)-->
-    <g class="zen-media-mountain" transform="translate(0.289, 32.609)">
-      <path class="zen-media-mountain-path" d="M7.432 21.147 L17.865 12.11 C19.665 10.596 21.373 9.862 23.173 9.862 C25.158 9.862 27.005 10.596 28.805 12.202 L36.191 18.853 L54.84 2.431 C56.779 0.734 58.81 0 61.072 0 C63.334 0 65.55 0.826 67.35 2.477 L84.568 18.67 L92 25.78 C92 35.23 87.153 40 77.551 40 L14.495 40 C4.801 40 0 35.275 0 25.78 Z"
-            style="fill: var(--zen-folder-stroke);" />
-    </g>
-    <rect class="zen-media-border" x="3.55" y="3.55" width="85.439" height="65.791" rx="9.262"
-          style="fill: none; stroke: var(--zen-folder-stroke); stroke-width: 7.1px;" />
-  </g>
-
-  <!--Sun (circle)-->
-  <g class="zen-media-sun" transform="translate(64.76, 67.886) translate(-9.914, -9.984)">
-    <circle class="zen-media-sun-path" cx="9.914" cy="9.984" r="9.914"
-            style="fill: var(--zen-folder-stroke);" />
-  </g>
-</svg>`;
-        },
 
         _ensureMediaStyles(root) {
             if (!root?.querySelector) return;
