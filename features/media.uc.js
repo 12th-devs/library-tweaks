@@ -2258,9 +2258,9 @@
 
     }
 
-    if (!customElements.get("zen-library-media-section")) {
+    if (!customElements.get("zen-library-tweaks-media-section")) {
         try {
-            customElements.define("zen-library-media-section", ZenLibraryMediaSectionElement);
+            customElements.define("zen-library-tweaks-media-section", ZenLibraryMediaSectionElement);
         } catch (e) {
             console.error("[LibraryTweaks] failed to define media section element:", e);
         }
@@ -2271,9 +2271,9 @@
             let html = null;
             try { html = window.gZenLibraryBookmarksIntegration?._nativeHtml?.(); } catch (e) { }
             if (html) {
-                return html`<zen-library-media-section class="zen-library-section" data-section="media" .library=${library}></zen-library-media-section>`;
+                return html`<zen-library-tweaks-media-section class="zen-library-section" data-section="media" .library=${library}></zen-library-tweaks-media-section>`;
             }
-            const el = document.createElement("zen-library-media-section");
+            const el = document.createElement("zen-library-tweaks-media-section");
             try { el.library = library; } catch (e) { }
             return el;
         }
@@ -2358,7 +2358,7 @@
 
         _mediaRegister(host) {
             if (!host || !this._isMediaEnabled?.()) return false;
-            if (!customElements.get("zen-library-media-section")) return false;
+            if (!customElements.get("zen-library-tweaks-media-section")) return false;
             const sections = host.zenLibrarySections;
             if (!sections || typeof sections !== "object") return false;
             let changed = false;
