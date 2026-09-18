@@ -391,6 +391,30 @@ zen-library-media-section .empty-state p {
     width: 28px;
     height: 28px;
     display: block;
+    --stroke: light-dark(var(--zen-colors-primary, currentColor), var(--zen-accent-button-color, currentColor));
+}
+
+.zen-library-tab[data-section="media"] .zen-media-border {
+    stroke: var(--stroke) !important;
+}
+
+.zen-library-tab[data-section="media"] :is(.zen-media-mountain-path, .zen-media-sun-path) {
+    fill: var(--stroke) !important;
+}
+
+/* Same fill system as the other tabs: transparent idle, stroke-mixed fill
+   when selected. !important outranks the SVG's inline styles. */
+.zen-library-tab[data-section="media"] .zen-media-bg {
+    fill-opacity: 0 !important;
+}
+
+.zen-library-tab[data-section="media"]:not([active]) .zen-media-bg {
+    fill: transparent !important;
+}
+
+.zen-library-tab[data-section="media"][active] .zen-media-bg {
+    fill: color-mix(in srgb, var(--stroke), light-dark(white, black) 70%) !important;
+    fill-opacity: 1 !important;
 }
 
 @media (prefers-reduced-motion: no-preference) {
