@@ -50,7 +50,7 @@ needed — and turning it back on re-registers everything the same way.
 
 ## Shortcuts
 
-- **Ctrl+D (Cmd+D)** smart-saves the page
+- **Ctrl+J (Cmd+J)** smart-saves the page
   (`zen.library.tweaks.shortcut.save`, on by default). Off hands the key back
   to the native bookmark panel.
 - **Ctrl+H (Cmd+H)** opens the native Library on History

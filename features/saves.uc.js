@@ -4169,7 +4169,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
 
             const isSidebarShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             const isBookmarksShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey && !e.altKey;
-            const isSaveShortcut = e.code === "KeyD" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
+            const isSaveShortcut = e.code === "KeyJ" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             const isHistoryShortcut = e.code === "KeyH" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
             if (isSaveShortcut) {
                 if (!this._isSaveShortcutEnabled()) return;

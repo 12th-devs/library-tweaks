@@ -77,7 +77,7 @@
   {
     "type": "checkbox",
     "property": "zen.library.tweaks.shortcut.save",
-    "label": "Ctrl+D (Cmd+D on macOS) smart-saves the page",
+    "label": "Ctrl+J (Cmd+J on macOS) smart-saves the page",
     "defaultValue": true
   },
   {
