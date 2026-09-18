@@ -153,6 +153,12 @@ zen-library-media-section {
     min-height: 0;
 }
 
+/* Like native spaces: exempt from the 308px non-spaces cap so the section
+   actually fills the grown panel. Specificity beats the native rule. */
+zen-library-media-section.zen-library-section[data-section="media"] {
+    max-width: none;
+}
+
 zen-library-media-section .library-list-wrapper {
     flex: 1;
     min-height: 0;

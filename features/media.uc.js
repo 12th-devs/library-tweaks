@@ -2178,6 +2178,9 @@
             this._mounted = true;
             try { this.classList.add("zen-library-section"); } catch (e) { }
             try { this.dataset.section = "media"; } catch (e) { }
+            // Capture the host NOW: after disconnect closest() finds nothing,
+            // which used to leak the wide panel onto every other tab.
+            try { this._panelHost = this.closest?.("zen-library") || null; } catch (e) { }
             const integration = window.gZenLibraryBookmarksIntegration;
             const module = integration?._ensureMediaModule?.();
             if (!module) {
@@ -2217,23 +2220,28 @@
             try { this._mediaWidthRO?.disconnect?.(); } catch (e) { }
             this._mediaWidthRO = null;
             // Mirror native spaces: the wide panel belongs to this tab only.
+            // Uses the stored host: closest() is already null post-detach.
             try {
-                this.closest?.("zen-library")?.style
+                (this._panelHost || null)?.style
                     ?.removeProperty("--zen-library-content-width");
             } catch (e) { }
+            this._panelHost = null;
         }
 
         // Mirror native spaces (#updateLibraryWidth): side width plus a 3-column
         // content estimate, set on the host so the panel grows with transition.
         _syncMediaWidth() {
             let host = null;
-            try { host = this.closest?.("zen-library") || null; } catch (e) { }
+            try { host = this._panelHost || this.closest?.("zen-library") || null; } catch (e) { }
             if (!host) return;
+            try { this._panelHost = host; } catch (e) { }
             let sideW = 110;
             try {
                 const side = host.querySelector?.("#zen-library-side");
                 if (side && window.windowUtils?.getBoundsWithoutFlushing) {
-                    sideW = Math.ceil(window.windowUtils.getBoundsWithoutFlushing(side).width) || 110;
+                    const measured = Math.ceil(window.windowUtils.getBoundsWithoutFlushing(side).width) || 0;
+                    // Sanity: a bogus measure must never wedge the panel huge.
+                    if (measured >= 50 && measured <= 300) sideW = measured;
                 }
             } catch (e) { }
             const target = sideW + 3 * 175 + 2 * 16 + 32;

@@ -3563,6 +3563,15 @@
             if (!host?.isConnected) return;
             this._registerNativeSections(host);
             this._syncSidebarDnD(host);
+            // Only media/spaces ever set the wide-panel var (and both clear it
+            // on leave). Anything left behind on another tab is stale — drop it
+            // so a leaked width can't wedge the panel.
+            try {
+                const tab = host.activeTab;
+                if (tab !== "media" && tab !== "spaces") {
+                    host.style?.removeProperty?.("--zen-library-content-width");
+                }
+            } catch (e) { }
             const root = this._nativeRoot(host);
             if (root) this._ensureNativeStyles(root);
         }
