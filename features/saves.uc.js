@@ -3034,15 +3034,12 @@
             this.init();
         }
 
-        // True when at least one Library Tweaks feature wants to run. The easels
-        // and history-section halves arrive via later scripts, so their checks
-        // are optional-chained.
+        // True when at least one Library Tweaks feature wants to run. The
+        // history-section half arrives via a later script, so its check is
+        // optional-chained.
         // (tweak-media.uc.js is fully standalone and needs nothing here.)
         _anyFeatureEnabled() {
             if (this._isMasterEnabled()) return true;
-            try {
-                if (typeof this._isEaselsEnabled === "function" && this._isEaselsEnabled()) return true;
-            } catch (e) { }
             try {
                 if (typeof this._isHistorySectionEnabled === "function" && this._isHistorySectionEnabled()) return true;
             } catch (e) { }
@@ -3107,7 +3104,6 @@
         // so re-enabling re-registers from a clean slate.
         _unregisterAllSections() {
             this._unregisterSavesSections();
-            try { this._easelsUnregister?.(); } catch (e) { }
             try { this._historySectionUnregister?.(); } catch (e) { }
         }
 
@@ -3158,7 +3154,6 @@
                 this._ensureUrlbarProvider();
             }
             this._registerNativeWhenReady();
-            try { this._easelsInit?.(); } catch (e) { }
             try { this._historySectionInit?.(); } catch (e) { }
         }
 
@@ -3411,12 +3406,11 @@
         }
 
         // Registers every enabled feature section on a native host. Per-feature
-        // methods are optional-chained: the easels half loads later. Native
-        // Media needs no registration — Zen ships it — the wide-panel tweak
-        // in _syncNativeLibrary applies to it directly.
+        // methods are optional-chained: the history-section half loads later.
+        // Native Media needs no registration — Zen ships it, and tweak-media
+        // owns its width and menu tweaks standalone.
         _registerNativeSections(host) {
             try { this._registerNativeSectionObject(host); } catch (e) { }
-            try { this._easelsRegister?.(host); } catch (e) { }
             try { this._historySectionRegister?.(host); } catch (e) { }
             try { if (this._applySidebarOrder(host)) host.requestUpdate?.(); } catch (e) { }
         }
@@ -4464,7 +4458,6 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         destroy() {
             this._shutdown();
             this._unwatchMasterPref();
-            try { this._unwatchEaselsPref?.(); } catch (e) { }
             try { this._unwatchHistorySectionPref?.(); } catch (e) { }
         }
 
@@ -4508,8 +4501,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         window.gZenLibraryBookmarksIntegration.destroy();
     }
     window.gZenLibraryBookmarksIntegration = new ZenLibraryBookmarksIntegration();
-    // Picks the feature halves back up when they loaded earlier (normal boot)
+    // Picks the feature half back up when it loaded earlier (normal boot)
     // without depending on script load order.
-    try { window._libraryTweaksAttachEasels?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
     try { window._libraryTweaksAttachHistorySection?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
 })();

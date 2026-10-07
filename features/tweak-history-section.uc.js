@@ -14,7 +14,7 @@
 //   Unregistering restores the native section, so no disabled branches live
 //   in the class itself.
 // - Registered through this mod's integration (`_historySectionRegister`),
-//   like the Easels half, instead of upstream's loader.
+//   like the other section halves, instead of upstream's loader.
 
 (function () {
     const HISTORY_SECTION_URL =

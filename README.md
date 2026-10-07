@@ -23,16 +23,6 @@ Turning the toggle off unregisters the Saves section, the `Ctrl+D` smart save,
 the bookmark shortcuts and the tab-drop handling immediately — no restart
 needed — and turning it back on re-registers everything the same way.
 
-### Easels section — `zen.easels.enabled`
-
-- Lists the boards stored by the zen-easel mod in the native Zen Library.
-- Search filters the grid in place; the "+" card creates and opens a board.
-- Right-click a card for Pin, Open, Rename and Delete (delete animates out).
-- Pinned boards (`zen.easels.pinned`) move to the top of the section and carry
-  a thumbtack badge in the top-left corner. Pin from the context menu.
-- Opening a board closes the Library, like the other sections.
-- Without the zen-easel mod installed the section shows an empty state instead.
-
 ### Native Media wider panel — `zen.library.tweaks.media.wide`
 
 - Zen now ships its own Media section, so this mod no longer overrides it —
