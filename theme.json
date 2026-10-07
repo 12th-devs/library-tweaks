@@ -3,7 +3,7 @@
   "homepage": "https://github.com/12th-devs/library-tweaks",
   "author": "Codex",
   "name": "Library Tweaks",
-  "description": "Small tweaks for the native Zen Library. Currently adds Saves (bookmarks), Easels and Media sections.",
+  "description": "Small tweaks for the native Zen Library. Currently adds Saves (bookmarks) and Easels sections.",
   "version": "1.0.0",
   "createdAt": "2026-09-17",
   "updatedAt": "2026-09-17",
@@ -26,9 +26,9 @@
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 21
     },
-    "features/media.uc.js": {
-      "name": "Library Tweaks - Media",
-      "description": "Media section for the native Zen Library.",
+    "features/tweak-media.uc.js": {
+      "name": "Library Tweaks - Media menu",
+      "description": "Rename and Delete for native Media items.",
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 22
     },
@@ -52,7 +52,7 @@
     },
     "features/tweak-spaces.uc.js": {
       "name": "Library Tweaks - Spaces extras",
-      "description": "Drop indicator and new-space button for native Spaces.",
+      "description": "Drop indicator and theme re-apply for native Spaces.",
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 26
     },
@@ -61,6 +61,12 @@
       "description": "On-device files group and rename support for native Downloads.",
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 27
+    },
+    "features/tweak-history-section.uc.js": {
+      "name": "Library Tweaks - History section",
+      "description": "Recently closed tabs and Clear history for native History.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 28
     }
   },
   "tags": [

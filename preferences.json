@@ -41,14 +41,31 @@
     "margin": "0 0 8px 0"
   },
   {
+    "type": "separator",
+    "label": "Media",
+    "margin": "20px 0 10px 0"
+  },
+  {
     "type": "checkbox",
-    "property": "zen.media.enabled",
-    "label": "Media section",
+    "property": "zen.library.tweaks.media.wide",
+    "label": "Wider panel for the native Media section (1.9x)",
     "defaultValue": true
   },
   {
     "type": "text",
-    "label": "Gathers images, video and audio from your Downloads folder, Zen Easel captures, Screenshots and optional extra folders (zen.library.media.user-dirs, semicolon-separated) into a masonry grid with type/location filters, previews and audio playback. Toggling applies immediately, no restart needed.",
+    "label": "Grows the Library panel to 794px while Zen's native Media tab is showing — 1.9x the 418px width of Downloads and the other sections — with a roomier grid (larger cards, wider gaps, like the old custom tab). Off keeps Media at the same width as the other sections. Applies immediately, no restart needed.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.media.menu",
+    "label": "Rename and Delete in the media menu",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Adds Rename file and Delete file to the right-click menu on Zen's native Media cards. Acts on the file on disk and refreshes the grid in place. Applies immediately, no restart needed.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },
@@ -117,6 +134,18 @@
   },
   {
     "type": "checkbox",
+    "property": "zen.library.tweaks.history.section",
+    "label": "Recently closed tabs in History",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Shows Recently closed tabs and Clear recent history shortcuts above the native History list. Closed tabs open in a sliding pane with reopen and forget actions. Off restores the native History tab. Applies immediately, no restart needed.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "checkbox",
     "property": "zen.library.tweaks.history.menu",
     "label": "Right-click menu on history items",
     "defaultValue": true
@@ -163,18 +192,6 @@
   },
   {
     "type": "checkbox",
-    "property": "zen.library.tweaks.spaces.new-button",
-    "label": "New space button",
-    "defaultValue": true
-  },
-  {
-    "type": "text",
-    "label": "Adds a trailing + tile that opens workspace creation.",
-    "size": "12px",
-    "margin": "0 0 8px 0"
-  },
-  {
-    "type": "checkbox",
     "property": "zen.library.tweaks.spaces.themes",
     "label": "Re-apply workspace themes",
     "defaultValue": true
@@ -204,7 +221,7 @@
   },
   {
     "type": "text",
-    "label": "Appends an On this device group with top-level Downloads-folder files and folders that have no history entry (hidden/partial skipped), with Open, Show in Folder, Rename and Delete. Respects the native search term.",
+      "label": "Appends an On this device group with top-level Downloads-folder files and folders that have no history entry (hidden/partial skipped), with Open, Show in Folder, Rename and Delete. Respects the native search term and type/date filters.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },

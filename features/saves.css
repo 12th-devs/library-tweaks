@@ -67,6 +67,70 @@
     opacity: 0.82;
 }
 
+/* Native Zen folder artwork (ported improvement): once _syncFolderIcons
+   injects the sidebar's own glyph, the div only frames it — the mask
+   fallback above applies until then. */
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    margin-block: -6px;
+    margin-inline: -4px -5px;
+    pointer-events: none;
+}
+
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg {
+    display: block;
+    filter: contrast(125%);
+}
+
+/* Sidebar folders only show the dots while a collapsed folder is active. */
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) .dots {
+    opacity: 0;
+}
+
+/* The open and closed look from zen-folder-icon.inc.css. */
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg g,
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg rect,
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg path {
+    transition:
+        transform 0.3s cubic-bezier(0.42, 0, 0, 1),
+        opacity 0.3s cubic-bezier(0.42, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg g,
+    .bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg rect,
+    .bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg path {
+        transition: none;
+    }
+}
+
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg[state="open"] .back {
+    transform: skewX(16deg) translate(-4px, 2px) scale(0.85);
+}
+
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg[state="open"] :is(.front, .dots, .icon) {
+    transform: skewX(-16deg) translate(8px, 2px) scale(0.85);
+}
+
+/* Position the special-folder icon image on the folder's front face,
+   matching zen-folders.css which does the same at translate(8.5px, 10.5px). */
+.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) image {
+    -moz-context-properties: fill, fill-opacity;
+    fill: color-mix(in srgb, var(--zen-folder-stroke) 50%, currentColor);
+    fill-opacity: 0.9;
+    transform: translate(8.5px, 10.5px);
+}
+
+/* Keyword-first search hits render above the tree. */
+.bookmarks-keyword-header {
+    margin: 10px 8px 5px;
+    font-size: 12px;
+    font-weight: 700;
+    opacity: 0.6;
+}
+
 .bookmark-row-icon.page {
     mask-image: url("chrome://browser/skin/zen-icons/globe.svg");
 }

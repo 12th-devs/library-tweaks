@@ -8,6 +8,8 @@
             this._items = [];
             this._searchTerm = "";
             this._openFolders = new Set();
+            this._keywordMap = null;
+            this._keywordHits = [];
             this._searchDebounce = null;
             this._placesListener = null;
             this._placesTimer = null;
@@ -31,7 +33,7 @@
 
         static ROOT_PREF = "zen.bookmarks.rootGuid";
 
-        static PLACES_EVENTS = ["bookmark-added", "bookmark-removed", "bookmark-moved", "bookmark-title-changed", "bookmark-url-changed", "bookmark-tags-changed"];
+        static PLACES_EVENTS = ["bookmark-added", "bookmark-removed", "bookmark-moved", "bookmark-title-changed", "bookmark-url-changed", "bookmark-tags-changed", "bookmark-keyword-changed"];
 
         get el() { return this.library.el.bind(this.library); }
 
@@ -88,6 +90,10 @@
             const observers = this._placesObservers();
             if (this._placesListener || !observers) return;
             this._placesListener = () => {
+                // Keywords/tags resolve through a cached map; any bookmark
+                // mutation may stale it, so drop it even when the re-render
+                // below is skipped.
+                this._keywordMap = null;
                 // Drag/drop and Library-internal mutations re-render explicitly;
                 // skip the debounced echo so the list does not rebuild twice.
                 if (Date.now() - this._lastDragAt < 800) return;
@@ -1428,7 +1434,7 @@
                         this._setFiltersOpen(true);
                     }
                 }, [
-                    this.el("img", { src: "chrome://browser/skin/zen-icons/sliders.svg", alt: "" }),
+                    this.el("img", { src: "chrome://browser/skin/zen-icons/circle-bars-filter.svg", alt: "", draggable: "false" }),
                     this.el("span", { textContent: "Filter" })
                 ])
             ]);
@@ -1498,7 +1504,11 @@
             }
             requestAnimationFrame(() => {
                 if (this._headerEls !== els || !this._filtersOpen) return;
-                host.style?.setProperty("--zen-library-filter-height", `${els.panelInner.scrollHeight + 8}px`);
+                // Panel inner is capped + scrollable (see native styles below),
+                // so push the list down by the visible height, not the full
+                // content height. Keep the 300px cap in sync with that CSS.
+                const visible = Math.min(els.panelInner.scrollHeight, 300);
+                host.style?.setProperty("--zen-library-filter-height", `${visible + 8}px`);
             });
         }
 
@@ -1575,6 +1585,11 @@
                 if (this._renderToken !== token) return;
                 this._items = roots;
                 const list = this.el("div", { className: "bookmarks-tree" });
+                const hits = this._keywordHits || [];
+                if (hits.length) {
+                    list.appendChild(this.el("div", { className: "bookmarks-keyword-header", textContent: "Top matches" }));
+                    for (const hit of hits) this._renderNode(hit, list, 0);
+                }
                 for (const root of roots) this._renderNode(root, list, 0);
                 if (!list.childElementCount) {
                     this._container.replaceChildren(this.el("div", { className: "empty-state" }, [
@@ -1585,6 +1600,7 @@
                 } else {
                     this._container.replaceChildren(list);
                 }
+                this._syncFolderIcons();
                 // Rebuilding the list resets scrollTop to 0; restore it so a
                 // drag/drop (or background Places echo) does not jump the view.
                 try {
@@ -1597,6 +1613,84 @@
                     this.el("h3", { textContent: "Bookmarks unavailable" })
                 ]));
             }
+        }
+
+        // Ported from upstream ZenLibraryTweaks (dev): folder open-state and
+        // keyword search. Which folders are open is remembered the way the
+        // native bookmarks tree remembers it — in the XUL store, keyed by the
+        // obfuscated place: url of the folder, under the bookmarks sidebar
+        // document — so the Library and the sidebar share one arrangement,
+        // kept across restarts like the sidebar's.
+        static FOLDER_SIDEBAR_URI = "chrome://browser/content/places/bookmarksSidebar.xhtml";
+
+        _folderStoreId(guid) {
+            try {
+                const { PlacesUIUtils } = ChromeUtils.importESModule("moz-src:///browser/components/places/PlacesUIUtils.sys.mjs");
+                return PlacesUIUtils.obfuscateUrlForXulStore(`place:parent=${guid}`);
+            } catch (e) { return ""; }
+        }
+
+        _folderIsOpenStored(guid) {
+            try {
+                const id = this._folderStoreId(guid);
+                if (!id) return false;
+                return Services.xulStore.getValue(ZenLibraryBookmarks.FOLDER_SIDEBAR_URI, id, "open") === "true";
+            } catch (e) { return false; }
+        }
+
+        _setFolderOpenStored(guid, open) {
+            try {
+                const id = this._folderStoreId(guid);
+                if (!id) return;
+                if (open) Services.xulStore.setValue(ZenLibraryBookmarks.FOLDER_SIDEBAR_URI, id, "open", "true");
+                else Services.xulStore.removeValue(ZenLibraryBookmarks.FOLDER_SIDEBAR_URI, id, "open");
+            } catch (e) { }
+        }
+
+        // Folds stored-open folders into the session set. Idempotent: closing
+        // a folder clears both, so re-seeding never resurrects it — and picks
+        // up folders opened in the sidebar live.
+        _seedOpenFolders(trees) {
+            try {
+                const walk = (nodes) => {
+                    for (const node of nodes || []) {
+                        if (!node) continue;
+                        if (node.isFolder && node.guid && this._folderIsOpenStored(node.guid)) {
+                            this._openFolders.add(node.guid);
+                        }
+                        if (node.children?.length) walk(node.children);
+                    }
+                };
+                walk(trees);
+            } catch (e) { }
+        }
+
+        // Keywords belong to a url like tags do (upstream BookmarkMeta): a
+        // bookmark whose keyword is the first word typed ranks first, like the
+        // address bar. Loaded once per Places mutation, straight from Places.
+        async _keywordUrls() {
+            if (this._keywordMap) return this._keywordMap;
+            const map = new Map();
+            try {
+                const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
+                const db = await PlacesUtils.promiseDBConnection();
+                const rows = await db.executeCached(
+                    `SELECT k.keyword AS keyword, h.url AS url
+                       FROM moz_keywords k
+                       JOIN moz_places h ON h.id = k.place_id`
+                );
+                for (const row of rows) {
+                    try {
+                        const keyword = String(row.getResultByName("keyword") || "").toLowerCase();
+                        const url = String(row.getResultByName("url") || "");
+                        if (!keyword || !url) continue;
+                        if (!map.has(keyword)) map.set(keyword, []);
+                        map.get(keyword).push(url.toLowerCase());
+                    } catch (e) { }
+                }
+            } catch (e) { }
+            this._keywordMap = map;
+            return map;
         }
 
         async fetchBookmarks() {
@@ -1637,6 +1731,7 @@
                     }
                 } catch (e) { }
             }
+            this._seedOpenFolders(trees);
             const collectTags = (node) => {
                 for (const tag of node.tags || []) tags.add(tag);
                 for (const child of node.children || []) collectTags(child);
@@ -1651,11 +1746,58 @@
                 this._rebuildFilterPanel();
             }
             const term = this._searchTerm.trim().toLowerCase();
+            // Keyword-first search (upstream improvement): bookmarks whose
+            // keyword is the first word typed hoist above the tree, like the
+            // address bar ranks them.
+            let keywordHits = [];
+            let hoisted = null;
+            if (term) {
+                try {
+                    const first = term.split(/\s+/)[0];
+                    const urls = new Set(((await this._keywordUrls()).get(first) || []));
+                    if (urls.size) {
+                        const seen = new Set();
+                        const walk = (nodes) => {
+                            for (const node of nodes || []) {
+                                if (!node) continue;
+                                if (!node.isFolder && !node.isSeparator && node.url &&
+                                    urls.has(String(node.url).toLowerCase()) && !seen.has(node.guid)) {
+                                    seen.add(node.guid);
+                                    keywordHits.push(node);
+                                }
+                                if (node.children?.length) walk(node.children);
+                            }
+                        };
+                        walk(trees);
+                        if (keywordHits.length) hoisted = seen;
+                    }
+                } catch (e) { }
+            }
             const hasFilters = term || this._activeTags.size > 0 || this._activeSpace !== "all";
-            const result = hasFilters ? trees.map(node => this._filterNode(node, term)).filter(Boolean) : trees;
+            let result = hasFilters ? trees.map(node => this._filterNode(node, term)).filter(Boolean) : trees;
+            if (hoisted?.size) result = this._pruneGuids(result, hoisted, true);
+            this._keywordHits = keywordHits;
             // Top-level Firefox folders are always visible (even when empty),
             // so nothing outside the Saves root is hidden.
             return result;
+        }
+
+        // Drops hoisted keyword hits from the tree so they don't show twice.
+        // Top-level roots stay (possibly empty), like the filter does.
+        _pruneGuids(nodes, guids, isTop) {
+            const out = [];
+            for (const node of nodes || []) {
+                if (!node) continue;
+                if (!node.isFolder && !node.isSeparator && guids.has(node.guid)) continue;
+                if (node.isFolder && node.children?.length) {
+                    const children = this._pruneGuids(node.children, guids, false);
+                    if (!children.length && !isTop) continue;
+                    out.push({ ...node, children });
+                    continue;
+                }
+                out.push(node);
+            }
+            return out;
         }
 
         async _rootGuid() {
@@ -1759,7 +1901,7 @@
             const tags = (node.tags || []).join(" ").toLowerCase();
             const children = (node.children || []).map(child => this._filterNode(child, term)).filter(Boolean);
             const matchesSearch = !term || title.includes(term) || url.includes(term) || tags.includes(term);
-            const matchesTag = this._activeTags.size === 0 || (node.tags || []).some(tag => this._activeTags.has(tag));
+            const matchesTag = this._activeTags.size === 0 || [...this._activeTags].every(tag => (node.tags || []).includes(tag));
             const matchesSpace = this._activeSpace === "all" || (node.spaceGuids || []).includes(this._activeSpace);
             const filterActive = this._activeTags.size > 0 || this._activeSpace !== "all";
             const matches = node.isFolder ? (!filterActive && matchesSearch) : !node.isSeparator && matchesSearch && matchesTag && matchesSpace;
@@ -1910,14 +2052,20 @@
 
         _toggleFolder(row, node) {
             if (!row || !node?.isFolder || this._searchTerm) {
-                if (this._openFolders.has(node.guid)) this._openFolders.delete(node.guid);
-                else this._openFolders.add(node.guid);
+                if (this._openFolders.has(node.guid)) {
+                    this._openFolders.delete(node.guid);
+                    this._setFolderOpenStored(node.guid, false);
+                } else {
+                    this._openFolders.add(node.guid);
+                    this._setFolderOpenStored(node.guid, true);
+                }
                 this.renderList();
                 return;
             }
             const depth = Number(row.dataset.depth || 0);
             if (row.hasAttribute("open")) {
                 this._openFolders.delete(node.guid);
+                this._setFolderOpenStored(node.guid, false);
                 row.removeAttribute("open");
                 let next = row.nextElementSibling;
                 while (next && Number(next.dataset.depth || 0) > depth) {
@@ -1925,13 +2073,55 @@
                     next = next.nextElementSibling;
                     remove.remove();
                 }
+                this._syncFolderIcons();
                 return;
             }
             this._openFolders.add(node.guid);
+            this._setFolderOpenStored(node.guid, true);
             row.setAttribute("open", "");
             const frag = document.createDocumentFragment();
             for (const child of node.children || []) this._renderNode(child, frag, depth + 1);
             row.after(...Array.from(frag.childNodes));
+            this._syncFolderIcons();
+        }
+
+        // Ported from upstream ZenLibraryTweaks (dev): every folder row gets
+        // the native Zen folder artwork (the sidebar's own glyph, animated
+        // open/closed, with special icons for the system roots) instead of the
+        // static CSS mask. Rows keep the mask as a fallback until synced.
+        _syncFolderIcons() {
+            let rawIcon = null;
+            try { rawIcon = customElements.get("zen-folder")?.rawIcon || null; } catch (e) { }
+            if (!rawIcon || !this._container) return;
+            let PlacesUtils = null;
+            try {
+                ({ PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs"));
+            } catch (e) { }
+            const special = {};
+            try {
+                special[PlacesUtils.bookmarks.toolbarGuid] = "chrome://browser/skin/zen-icons/selectable/star-1.svg";
+                special[PlacesUtils.bookmarks.menuGuid] = "chrome://browser/skin/zen-icons/selectable/inbox.svg";
+                special[PlacesUtils.bookmarks.unfiledGuid] = "chrome://browser/skin/zen-icons/selectable/bookmark.svg";
+            } catch (e) { }
+            for (const icon of this._container.querySelectorAll(".bookmark-folder-row .bookmark-row-icon.folder")) {
+                try {
+                    let svg = icon.firstElementChild;
+                    if (!svg || svg.localName !== "svg") {
+                        svg = rawIcon.cloneNode(true);
+                        icon.replaceChildren(svg);
+                        try { icon.style.maskImage = "none"; } catch (e) { }
+                        try { icon.style.background = "none"; } catch (e) { }
+                        try { icon.style.opacity = "1"; } catch (e) { }
+                    }
+                    const row = icon.closest(".bookmark-folder-row");
+                    svg.setAttribute("state", row?.hasAttribute("open") ? "open" : "close");
+                    const svgImage = svg.querySelector?.(".icon image");
+                    if (svgImage) {
+                        const href = special[row?.dataset?.guid] ?? "";
+                        if (svgImage.getAttribute("href") !== href) svgImage.setAttribute("href", href);
+                    }
+                } catch (e) { }
+            }
         }
 
         _onDragStart(event, node) {
@@ -1984,6 +2174,7 @@
                 if (node.isFolder) {
                     await this._moveBookmark(dragged, node.guid, node.children.length);
                     this._openFolders.add(node.guid);
+                    this._setFolderOpenStored(node.guid, true);
                 }
                 else await this._dropOntoBookmark(dragged, node, after);
                 await this.renderList();
@@ -2844,12 +3035,16 @@
         }
 
         // True when at least one Library Tweaks feature wants to run. The easels
-        // half arrives via a later script, so its check is optional-chained.
+        // and history-section halves arrive via later scripts, so their checks
+        // are optional-chained.
+        // (tweak-media.uc.js is fully standalone and needs nothing here.)
         _anyFeatureEnabled() {
             if (this._isMasterEnabled()) return true;
             try {
                 if (typeof this._isEaselsEnabled === "function" && this._isEaselsEnabled()) return true;
-                if (typeof this._isMediaEnabled === "function" && this._isMediaEnabled()) return true;
+            } catch (e) { }
+            try {
+                if (typeof this._isHistorySectionEnabled === "function" && this._isHistorySectionEnabled()) return true;
             } catch (e) { }
             return false;
         }
@@ -2913,7 +3108,7 @@
         _unregisterAllSections() {
             this._unregisterSavesSections();
             try { this._easelsUnregister?.(); } catch (e) { }
-            try { this._mediaUnregister?.(); } catch (e) { }
+            try { this._historySectionUnregister?.(); } catch (e) { }
         }
 
         _unregisterSavesSections() {
@@ -2938,11 +3133,9 @@
 
         _debug(...args) {
             try {
-                const enabled = Services.prefs.getBoolPref("zen.bookmarks.debug", true);
-                if (enabled) console.log("[ZenLibraryBookmarks]", ...args);
-            } catch (e) {
-                console.log("[ZenLibraryBookmarks]", ...args);
-            }
+                const enabled = Services.prefs.getBoolPref("zen.bookmarks.debug", false);
+                if (enabled) console.debug("[ZenLibraryBookmarks]", ...args);
+            } catch (e) { }
         }
 
         init() {
@@ -2966,7 +3159,7 @@
             }
             this._registerNativeWhenReady();
             try { this._easelsInit?.(); } catch (e) { }
-            try { this._mediaInit?.(); } catch (e) { }
+            try { this._historySectionInit?.(); } catch (e) { }
         }
 
         // Fallback registration for the NL urlbar provider: Sine imports
@@ -3218,11 +3411,13 @@
         }
 
         // Registers every enabled feature section on a native host. Per-feature
-        // methods are optional-chained: the easels/media halves load later.
+        // methods are optional-chained: the easels half loads later. Native
+        // Media needs no registration — Zen ships it — the wide-panel tweak
+        // in _syncNativeLibrary applies to it directly.
         _registerNativeSections(host) {
             try { this._registerNativeSectionObject(host); } catch (e) { }
             try { this._easelsRegister?.(host); } catch (e) { }
-            try { this._mediaRegister?.(host); } catch (e) { }
+            try { this._historySectionRegister?.(host); } catch (e) { }
             try { if (this._applySidebarOrder(host)) host.requestUpdate?.(); } catch (e) { }
         }
 
@@ -3563,9 +3758,9 @@
             if (!host?.isConnected) return;
             this._registerNativeSections(host);
             this._syncSidebarDnD(host);
-            // Only media/spaces ever set the wide-panel var (and both clear it
-            // on leave). Anything left behind on another tab is stale — drop it
-            // so a leaked width can't wedge the panel.
+            // Never let a stale wide-panel var leak onto other tabs (Media
+            // width itself is owned by tweak-media.uc.js; Spaces manages its
+            // own, so both are left alone here).
             try {
                 const tab = host.activeTab;
                 if (tab !== "media" && tab !== "spaces") {
@@ -3590,7 +3785,10 @@
 .zen-library-tab[dragging-tab] {
   opacity: 0.5;
 }
-/* Old-mod Saves glyph: the injected folder+ribbon SVG replaces the sprite box. */
+/* Saves glyph: injected SVG replaces the sprite box, using the native
+   sprite color tokens (zen-library.css): accent stroke, stroke-mixed fill,
+   transparent fill when idle. Inline SVG can't use context-fill, so paint
+   the shapes directly with those tokens. */
 .zen-library-tab[data-section="bookmarks"] .zen-library-tab-icon-image {
   display: none;
 }
@@ -3598,28 +3796,26 @@
   width: 28px;
   height: 28px;
   display: block;
+  --stroke: var(--zen-accent-button-color);
+  --fill: color-mix(in srgb, var(--stroke), light-dark(white, black) 60%);
 }
-/* Same fill system as the native sprite tabs (zen-library.css): a theme-aware
-   stroke token, transparent fill when idle, and a stroke-mixed fill when
-   selected. !important outranks the SVG rects' inline styles. */
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon {
-  --stroke: light-dark(var(--zen-colors-primary, currentColor), var(--zen-accent-button-color, currentColor));
+.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon :is(.zen-bookmarks-bg) {
+  fill: var(--fill);
 }
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-border {
-  stroke: var(--stroke) !important;
+.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon :is(.zen-bookmarks-gradient) {
+  fill: var(--fill);
+  mix-blend-mode: overlay;
+  opacity: 0.1;
 }
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-ribbon path {
-  fill: var(--stroke) !important;
+.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon :is(.zen-bookmarks-border) {
+  fill: none;
+  stroke: var(--stroke);
 }
-.zen-library-tab[data-section="bookmarks"] :is(.zen-bookmarks-bg, .zen-bookmarks-gradient) {
-  fill-opacity: 0 !important;
+.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon .zen-bookmarks-ribbon path {
+  fill: var(--stroke);
 }
-.zen-library-tab[data-section="bookmarks"]:not([active]) .zen-bookmarks-bg {
-  fill: transparent !important;
-}
-.zen-library-tab[data-section="bookmarks"][active] .zen-bookmarks-bg {
-  fill: color-mix(in srgb, var(--stroke), light-dark(white, black) 70%) !important;
-  fill-opacity: 1 !important;
+.zen-library-tab[data-section="bookmarks"]:not([active]) .zen-bookmarks-icon :is(.zen-bookmarks-bg, .zen-bookmarks-gradient) {
+  fill: transparent;
 }
 @media (prefers-reduced-motion: no-preference) {
   :is(.zen-library-tab[data-section="bookmarks"][active],
@@ -3689,6 +3885,17 @@ zen-library-bookmarks-section .library-list-container {
 }
 zen-library-bookmarks-section .zen-library-search-top[open] + .library-list-container {
   transform: translateY(var(--zen-library-filter-height, 0px));
+}
+/* Saves can hold dozens of space/tag chips while native groups stay tiny, so
+   cap the filter panel and scroll it instead of pushing the list off-screen.
+   The 300px cap must stay in sync with the clamped --zen-library-filter-height
+   measured in _applyFiltersOpen. */
+zen-library-bookmarks-section .zen-library-filter-panel-inner {
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  -moz-window-dragging: no-drag;
 }
 /* Row parity with the custom library: rows are .library-list-item.bookmark-row,
    and the more button borrows .download-row-action from the downloads section.
@@ -3951,6 +4158,10 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         }
 
         _bookmarksIconSvg() {
+            // Inline SVG (not a sprite image), so context-fill / context-stroke
+            // would resolve to black. Paint with the same tokens native sprite
+            // tabs use (--zen-accent-button-color + 60% mix); the tab CSS below
+            // fills bg shapes when active and makes them transparent when idle.
             return `
 <svg class="zen-bookmarks-icon" width="28" height="28" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
@@ -3958,36 +4169,23 @@ zen-library-bookmarks-section .empty-state .empty-icon {
       <rect x="-10" y="-10" width="148" height="148" fill="white" />
       <rect x="30" y="18" width="68" height="92" rx="12" fill="black" />
     </mask>
-    <linearGradient gradientUnits="userSpaceOnUse" x1="64" y1="10" x2="64" y2="118" id="zen-bookmarks-grad-back">
-      <stop offset="0" style="stop-color: rgb(255, 255, 255)"/>
-      <stop offset="1" style="stop-color: rgb(0, 0, 0)"/>
-    </linearGradient>
-    <linearGradient gradientUnits="userSpaceOnUse" x1="64" y1="10" x2="64" y2="118" id="zen-bookmarks-grad-front">
-      <stop offset="0" style="stop-color: rgb(255, 255, 255)"/>
-      <stop offset="1" style="stop-color: rgb(0, 0, 0)"/>
-    </linearGradient>
   </defs>
   <g class="zen-bookmarks-bounce" style="transform-origin: 64px 64px;">
     <g class="zen-bookmarks-back-card" mask="url(#zen-bookmarks-mask)">
       <g transform="rotate(-8 64 64)">
-        <rect class="zen-bookmarks-bg" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45"
-              style="fill: var(--zen-folder-front-bgcolor); fill-opacity: 0;" />
-        <rect class="zen-bookmarks-gradient" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45"
-              style="fill: url(#zen-bookmarks-grad-back); fill-opacity: 0;" />
+        <rect class="zen-bookmarks-bg" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45" />
+        <rect class="zen-bookmarks-gradient" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45" />
         <rect class="zen-bookmarks-border" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45"
-              style="fill: none; stroke: var(--zen-folder-stroke); stroke-width: 7.1px;" />
+              fill="none" stroke-width="7.1" />
       </g>
     </g>
     <g class="zen-bookmarks-front-card">
-      <rect class="zen-bookmarks-bg" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45"
-            style="fill: var(--zen-folder-front-bgcolor); fill-opacity: 0;" />
-      <rect class="zen-bookmarks-gradient" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45"
-            style="fill: url(#zen-bookmarks-grad-front); fill-opacity: 0;" />
+      <rect class="zen-bookmarks-bg" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45" />
+      <rect class="zen-bookmarks-gradient" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45" />
       <rect class="zen-bookmarks-border" x="37.55" y="25.55" width="52.9" height="76.9" rx="6.45"
-            style="fill: none; stroke: var(--zen-folder-stroke); stroke-width: 7.1px;" />
+            fill="none" stroke-width="7.1" />
       <g class="zen-bookmarks-ribbon">
-        <path d="M 51 22 L 77 22 L 77 70 L 64 60 L 51 70 Z"
-              style="fill: var(--zen-folder-stroke);" />
+        <path d="M 51 22 L 77 22 L 77 70 L 64 60 L 51 70 Z" />
       </g>
     </g>
   </g>
@@ -4267,7 +4465,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             this._shutdown();
             this._unwatchMasterPref();
             try { this._unwatchEaselsPref?.(); } catch (e) { }
-            try { this._unwatchMediaPref?.(); } catch (e) { }
+            try { this._unwatchHistorySectionPref?.(); } catch (e) { }
         }
 
         // Full teardown minus the master pref watcher, so the toggle-off path
@@ -4313,5 +4511,5 @@ zen-library-bookmarks-section .empty-state .empty-icon {
     // Picks the feature halves back up when they loaded earlier (normal boot)
     // without depending on script load order.
     try { window._libraryTweaksAttachEasels?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
-    try { window._libraryTweaksAttachMedia?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
+    try { window._libraryTweaksAttachHistorySection?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
 })();

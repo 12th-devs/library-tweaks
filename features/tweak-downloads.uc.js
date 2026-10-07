@@ -5,7 +5,8 @@
 // 1. System-wide downloads (toggle, default off, like the reference mod):
 //    an appended "On this device" group lists top-level files/folders from the
 //    OS Downloads folder that have no download-history entry. Append-only: it
-//    never touches Lit-managed nodes, and re-applies after native re-renders.
+//    never touches Lit-managed nodes, re-applies after native re-renders, and
+//    mirrors the native search text plus type/when filters.
 // 2. Rename in the native context menu (toggle, default on): a "Rename file"
 //    item is appended to the native downloads popup, resolved against the
 //    live Downloads list, and applied on disk.
@@ -253,6 +254,98 @@
         scanCache = null;
     }
 
+    function clearHistCache() {
+        histCache = null;
+    }
+
+    function clearAllCaches() {
+        scanCache = null;
+        histCache = null;
+    }
+
+    // Force the visible Downloads sections to re-render with the new name.
+    // Mutating download.target.path + refresh() notifies native views, but the
+    // row title is also patched directly so the change is visible even if a
+    // list instance is not shared with native. Mirrors how the native section
+    // re-renders on onDownloadChanged -> requestUpdate (see
+    // ZenLibraryDownloadsSection in the reference library sources).
+    function refreshDownloadsSections(newName) {
+        try {
+            const sections = [...(document.querySelectorAll?.("zen-library-downloads-section") || [])];
+            for (const section of sections) {
+                try {
+                    // Drop the dim verdict so the renamed row is re-checked.
+                    section.querySelectorAll?.(".zen-library-row").forEach(row => {
+                        try { delete row._ltMissingChecked; } catch (e) { }
+                    });
+                } catch (e) { }
+                if (newName) {
+                    try {
+                        const openRow = section._ltMenuRow?.isConnected ? section._ltMenuRow :
+                            section.querySelector?.(".zen-library-row[menu-open]");
+                        const titleEl = openRow?.querySelector?.(".zen-library-row-title");
+                        if (titleEl) titleEl.textContent = newName;
+                    } catch (e) { }
+                }
+                try { section.requestUpdate?.(); } catch (e) { }
+            }
+        } catch (e) { }
+        try { document.querySelector("zen-library")?.requestUpdate?.(); } catch (e) { }
+    }
+
+    /* ------------------------------------------- native filter mirroring */
+
+    // Same file-type vocabulary as the native Downloads section
+    // (ZenLibraryDownloadsSection): the on-device rows filter identically.
+    const MS_PER_DAY = 86400000;
+    const DISK_FILE_TYPES = {
+        images: "png jpg jpeg gif webp svg bmp tif tiff heic heif avif ico",
+        video: "mp4 mkv mov avi webm m4v wmv flv mpg mpeg",
+        audio: "mp3 wav flac aac ogg oga m4a opus wma aiff",
+        documents: "pdf doc docx xls xlsx ppt pptx txt md rtf odt ods odp csv epub pages numbers key",
+        archives: "zip rar 7z tar gz bz2 xz tgz zst",
+        apps: "dmg pkg exe msi app deb rpm appimage apk jar",
+    };
+    const DISK_EXT_TO_TYPE = new Map();
+    for (const [type, exts] of Object.entries(DISK_FILE_TYPES)) {
+        for (const ext of exts.split(" ")) DISK_EXT_TO_TYPE.set(ext, type);
+    }
+    const DISK_WHEN_DAYS = { today: 1, week: 7, month: 30 };
+
+    // Read straight off the native section instance (plain fields, so no Lit
+    // update is triggered by looking). Missing on older builds → no filtering.
+    function diskActiveTypes(section) {
+        try {
+            const set = section?.activeFilters;
+            if (!set) return [];
+            const types = [];
+            for (const key of set) {
+                if (typeof key === "string" && key.startsWith("type:")) types.push(key.slice(5));
+            }
+            return types;
+        } catch (e) { return []; }
+    }
+
+    function diskActiveWhenDays(section) {
+        try {
+            const set = section?.activeFilters;
+            if (!set) return null;
+            let days = null;
+            for (const key of set) {
+                if (typeof key !== "string" || !key.startsWith("when:")) continue;
+                const d = DISK_WHEN_DAYS[key.slice(5)];
+                if (d && (days === null || d > days)) days = d;
+            }
+            return days;
+        } catch (e) { return null; }
+    }
+
+    function diskFileType(item) {
+        if (!item || item.isFolder) return undefined;
+        const m = String(item.filename || "").match(/\.([^.]+)$/);
+        return m ? DISK_EXT_TO_TYPE.get(m[1].toLowerCase()) : undefined;
+    }
+
     /* ------------------------------------------------------- disk group UI */
 
     function openDiskItem(item) {
@@ -317,8 +410,8 @@
                 item.filename = name;
                 item.targetPath = file.path;
                 item.id = "disk|" + normPath(file.path);
-                clearScanCache();
-                applyGroup(section);
+                clearAllCaches();
+                await applyGroup(section);
             } catch (e) { console.error("[LibraryTweaks] disk rename failed:", e); }
         });
         on("lt-disk-ctx-delete", async () => {
@@ -327,8 +420,8 @@
             try {
                 const file = nsFile(item.targetPath);
                 if (file.exists()) file.remove(false);
-                clearScanCache();
-                applyGroup(section);
+                clearAllCaches();
+                await applyGroup(section);
             } catch (e) { console.error("[LibraryTweaks] disk delete failed:", e); }
         });
         popup.openPopupAtScreen(event.screenX, event.screenY, true);
@@ -365,64 +458,128 @@
         return row;
     }
 
+    // Coalesced re-apply: native re-render bursts and chip clicks collapse
+    // into one trailing pass instead of overlapping scans.
+    function scheduleApply(section) {
+        if (!section || section._ltScheduled) return;
+        section._ltScheduled = true;
+        window.setTimeout(() => {
+            section._ltScheduled = false;
+            try { applyGroup(section); } catch (e) { }
+        }, 0);
+    }
+
     // Append-only group at the end of native results. Signature-guarded so our
-    // own insertions never retrigger the observer loop.
+    // own insertions never retrigger the observer loop. Applies the same
+    // search text, type pills and when-filters native does, so the group
+    // reads as part of the section rather than an unfiltered appendix.
     async function applyGroup(section) {
-        const results = section.querySelector?.(".zen-library-search-results");
+        let results = section.querySelector?.(".zen-library-search-results");
         if (!results) return;
         if (!systemOn()) {
             results.querySelector(":scope > ." + GROUP_CLASS)?.remove();
             return;
         }
-        if (section._ltApplying) return;
+        if (section._ltApplying) {
+            section._ltQueued = true;
+            return;
+        }
         section._ltApplying = true;
         try {
-            const filter = (section.querySelector?.(".zen-library-search-box input")?.value || "").trim().toLowerCase();
-            const items = await scanDisk();
-            if (!results.isConnected) return;
-            const visible = filter ? items.filter(i => i.filename.toLowerCase().includes(filter)) : items;
-            const sig = filter + "\n" + visible.map(i => i.id).join("\n");
-            const existing = results.querySelector(":scope > ." + GROUP_CLASS);
-            if (existing?.dataset.sig === sig) return;
-            existing?.remove();
-            if (!visible.length) return;
-            const group = document.createElement("div");
-            group.className = "zen-library-group " + GROUP_CLASS;
-            group.dataset.sig = sig;
-            const header = document.createElement("h3");
-            header.textContent = "On this device";
-            group.appendChild(header);
-            for (const item of visible) group.appendChild(diskRow(item, section));
-            results.appendChild(group);
+            do {
+                section._ltQueued = false;
+                const filter = (section.querySelector?.(".zen-library-search-box input")?.value || "").trim().toLowerCase();
+                const types = diskActiveTypes(section);
+                const whenDays = diskActiveWhenDays(section);
+                const cutoff = whenDays ? Date.now() - whenDays * MS_PER_DAY : 0;
+                const items = await scanDisk();
+                if (!section.isConnected) return;
+                results = section.querySelector?.(".zen-library-search-results");
+                if (!results || !results.isConnected) return;
+                const visible = items.filter(i => {
+                    if (filter && !i.filename.toLowerCase().includes(filter)) return false;
+                    if (types.length && !types.includes(diskFileType(i))) return false;
+                    if (cutoff && !(i.timestamp >= cutoff)) return false;
+                    return true;
+                });
+                const sig = filter + "\n" + types.join(",") + "\n" + (whenDays || "") + "\n" + visible.map(i => i.id).join("\n");
+                const existing = results.querySelector(":scope > ." + GROUP_CLASS);
+                if (existing?.dataset.sig === sig) {
+                    if (!section._ltQueued) return;
+                    continue;
+                }
+                existing?.remove();
+                if (!visible.length) {
+                    if (!section._ltQueued) return;
+                    continue;
+                }
+                const group = document.createElement("div");
+                group.className = "zen-library-group " + GROUP_CLASS;
+                group.dataset.sig = sig;
+                const header = document.createElement("h3");
+                header.textContent = "On this device";
+                group.appendChild(header);
+                for (const item of visible) group.appendChild(diskRow(item, section));
+                results.appendChild(group);
+            } while (section._ltQueued);
         } finally {
             section._ltApplying = false;
+            section._ltQueued = false;
         }
     }
 
     /* ------------------------------------------------------- native rename */
 
-    // Resolved against the UNIFIED session+history list (DownloadHistoryList),
-    // so both fresh and previous-session rows match. HistoryDownload objects
-    // expose the same target.path/source.url shape and a refresh() mimic.
-    // Resolved against the SAME unified list instance native renders from
-    // (DownloadHistory.getList({type: PUBLIC}) is singleton-cached), so mutations
-    // land on native's own objects and refresh() notifies its views directly.
+    // Resolved against BOTH the live session lists (Downloads.getList, what the
+    // native ZenLibraryDownloadsSection renders from via DownloadsCommon.getData)
+    // and the history lists (DownloadHistory.getList, previous sessions), so
+    // fresh and older rows match. Mutating every match + refresh() notifies
+    // native's views directly, and refreshDownloadsSections() re-renders.
     async function unifiedLists() {
         const lists = [];
         try {
             const { DownloadHistory } = ChromeUtils.importESModule("resource://gre/modules/DownloadHistory.sys.mjs");
             const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
-            lists.push(await DownloadHistory.getList({ type: Downloads.PUBLIC }));
+            try { lists.push(await Downloads.getList(Downloads.PUBLIC)); } catch (e) { }
+            try { lists.push(await DownloadHistory.getList({ type: Downloads.PUBLIC })); } catch (e) { }
             try {
                 const { PrivateBrowsingUtils } = ChromeUtils.importESModule("resource://gre/modules/PrivateBrowsingUtils.sys.mjs");
                 if (PrivateBrowsingUtils.isWindowPrivate(window)) {
-                    lists.push(await DownloadHistory.getList({ type: Downloads.ALL }));
+                    try { lists.push(await Downloads.getList(Downloads.ALL)); } catch (e) { }
+                    try { lists.push(await DownloadHistory.getList({ type: Downloads.ALL })); } catch (e) { }
                 }
             } catch (e) { }
         } catch (e) {
             console.warn("[LibraryTweaks] rename: download lists unavailable:", e);
         }
         return lists;
+    }
+
+    function downloadMatches(download, filename, urlText) {
+        try {
+            const name = download.target?.path ? PathUtils.filename(download.target.path) : "";
+            if (name !== filename) return false;
+            if (urlText) {
+                const source = String(download.source?.url || "");
+                if (!source.includes(urlText)) return false;
+            }
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function resolveAllNativeDownloads(filename, urlText) {
+        const cands = [];
+        for (const list of await unifiedLists()) {
+            let all = [];
+            try { all = await list.getAll(); } catch (e) { continue; }
+            for (const download of all) {
+                if (!downloadMatches(download, filename, urlText)) continue;
+                if (!cands.includes(download)) cands.push(download);
+            }
+        }
+        return cands;
     }
 
     async function resolveNativeDownload(row) {
@@ -433,29 +590,15 @@
                 console.warn("[LibraryTweaks] rename: no title in row");
                 return null;
             }
-            const cands = [];
-            for (const list of await unifiedLists()) {
-                let all = [];
-                try { all = await list.getAll(); } catch (e) { continue; }
-                for (const download of all) {
-                    let name = "";
-                    let source = "";
-                    try {
-                        name = download.target?.path ? PathUtils.filename(download.target.path) : "";
-                        source = String(download.source?.url || "");
-                    } catch (e) { continue; }
-                    if (name !== filename) continue;
-                    if (urlText && !source.includes(urlText)) continue;
-                    if (!cands.includes(download)) cands.push(download);
-                }
-            }
+            const cands = await resolveAllNativeDownloads(filename, urlText);
             if (!cands.length) {
                 console.warn("[LibraryTweaks] rename: no download matches", JSON.stringify(filename));
                 return null;
             }
+            // Same file tracked by both the session and history lists: return the
+            // first for menu gating, the rename handler updates every match.
             if (cands.length > 1) {
-                console.warn("[LibraryTweaks] rename: ambiguous (" + cands.length + " matches for " + JSON.stringify(filename) + ")");
-                return null;
+                console.debug("[LibraryTweaks] rename: " + cands.length + " matches for " + JSON.stringify(filename) + ", using first");
             }
             return cands[0];
         } catch (e) {
@@ -487,7 +630,25 @@
         item.addEventListener("command", async () => {
             const download = item._ltDownload;
             if (!download?.target?.path) return;
-            const filename = PathUtils.filename(download.target.path);
+            // Prefer the row the menu opened from for identity: same filename
+            // from different sites shares the name but not the URL text, so the
+            // row disambiguates which file's session+history entries to update.
+            let rowForName = null;
+            try {
+                rowForName = item._ltRow?.isConnected ? item._ltRow :
+                    document.querySelector("zen-library-downloads-section .zen-library-row[menu-open]");
+            } catch (e) { }
+            const filename = (() => {
+                try {
+                    const t = (rowForName?.querySelector?.(".zen-library-row-title")?.textContent || "").trim();
+                    if (t) return t;
+                } catch (e) { }
+                try { return PathUtils.filename(download.target.path); } catch (e) { return ""; }
+            })();
+            const urlText = (() => {
+                try { return (rowForName?.querySelector?.(".zen-library-download-url")?.textContent || "").trim(); } catch (e) { return ""; }
+            })();
+            if (!filename) return;
             const input = { value: filename };
             const ok = Services.prompt.prompt(window, "Rename File", null, input, null, { value: false });
             const name = ok ? input.value.trim() : "";
@@ -496,27 +657,43 @@
                 const file = nsFile(download.target.path);
                 if (!file.exists()) return;
                 file.moveTo(file.parent, name);
-                // Point the (shared, native-rendered) object at the new path and
-                // verify the write stuck; refresh() then notifies native's views
-                // so the section re-renders with the new name by itself.
+                const newPath = file.path;
+                // Update every list instance tracking this file (session + history):
+                // each refresh() notifies its own views, so the native section
+                // re-renders with the new name by itself.
+                let updated = 0;
                 let stuck = false;
                 try {
-                    download.target.path = file.path;
-                    stuck = download.target.path === file.path;
+                    const matches = await resolveAllNativeDownloads(filename, urlText);
+                    const targets = matches.length ? matches : [download];
+                    for (const match of targets) {
+                        try {
+                            match.target.path = newPath;
+                            if (match.target.path === newPath) {
+                                stuck = true;
+                                updated++;
+                            }
+                        } catch (e) {
+                            console.warn("[LibraryTweaks] rename: target.path not writable:", e);
+                        }
+                        try { await match.refresh?.(); } catch (e) {
+                            console.warn("[LibraryTweaks] rename: refresh failed:", e);
+                        }
+                    }
                 } catch (e) {
-                    console.warn("[LibraryTweaks] rename: target.path not writable:", e);
+                    console.warn("[LibraryTweaks] rename: multi-list update failed:", e);
                 }
-                try { await download.refresh?.(); } catch (e) {
-                    console.warn("[LibraryTweaks] rename: refresh failed:", e);
-                }
-                try {
-                    const row = document.querySelector("zen-library-downloads-section .zen-library-row[menu-open]");
-                    const titleEl = row?.querySelector(".zen-library-row-title");
-                    if (titleEl) titleEl.textContent = name;
-                } catch (e) { }
-                document.querySelector("zen-library")?.requestUpdate?.();
                 if (!stuck) console.warn("[LibraryTweaks] rename: name applied to row but may revert on next data refresh");
-                clearScanCache();
+                clearAllCaches();
+                // Patch the open row immediately, then re-render the section so
+                // the new name survives the next Lit update and is visible.
+                refreshDownloadsSections(name);
+                if (!updated) {
+                    try {
+                        const titleEl = rowForName?.querySelector?.(".zen-library-row-title");
+                        if (titleEl) titleEl.textContent = name;
+                    } catch (e) { }
+                }
             } catch (e) {
                 console.error("[LibraryTweaks] rename failed:", e);
             }
@@ -528,6 +705,7 @@
             item.hidden = true;
             separator.hidden = true;
             item._ltDownload = null;
+            item._ltRow = null;
             if (!renameOn()) return;
             // Our capture-phase record first, native [menu-open] marker second.
             let row = null;
@@ -550,6 +728,7 @@
                 return;
             }
             item._ltDownload = download;
+            item._ltRow = row;
             item.hidden = false;
             menu._ltRenameSeparator.hidden = false;
         });
@@ -576,15 +755,22 @@
             } catch (e) { }
         };
         const observer = new MutationObserver(() => {
-            applyGroup(section);
+            scheduleApply(section);
             scheduleMarkMissing(section);
         });
+        // Filter chips don't always mutate the results DOM (e.g. when native
+        // has nothing to show either way), so watch section events too: the
+        // trailing pass reads the chips' settled state. Input also makes the
+        // group filter live while typing, ahead of native's debounce.
+        const onSectionEvent = () => scheduleApply(section);
         try {
             section.addEventListener("contextmenu", onContextMenu, true);
+            section.addEventListener("click", onSectionEvent, true);
+            section.addEventListener("input", onSectionEvent, true);
             const results = section.querySelector?.(".zen-library-search-results") || section;
             observer.observe(results, { childList: true, subtree: true });
         } catch (e) { return; }
-        state.sections.set(section, { observer, onContextMenu });
+        state.sections.set(section, { observer, onContextMenu, onSectionEvent });
         scheduleMarkMissing(section);
     }
 
@@ -594,6 +780,10 @@
             try { record.observer?.disconnect?.(); } catch (e) { }
             try {
                 if (record.onContextMenu) section.removeEventListener("contextmenu", record.onContextMenu, true);
+                if (record.onSectionEvent) {
+                    section.removeEventListener("click", record.onSectionEvent, true);
+                    section.removeEventListener("input", record.onSectionEvent, true);
+                }
             } catch (e) { }
             state.sections.delete(section);
         }
