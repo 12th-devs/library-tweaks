@@ -1968,7 +1968,10 @@
             parent.appendChild(row);
 
             if (!node.isFolder) return;
-            const open = this._openFolders.has(node.guid) || depth === 0 || this._searchTerm;
+            // Folders start closed; only folders the user left open (restored
+            // from the shared sidebar store) or matches for the live search
+            // render expanded.
+            const open = this._openFolders.has(node.guid) || !!this._searchTerm;
             row.toggleAttribute("open", open);
             if (!open) return;
             for (const child of node.children) this._renderNode(child, parent, depth + 1);

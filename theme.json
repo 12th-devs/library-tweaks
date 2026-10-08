@@ -44,12 +44,6 @@
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 25
     },
-    "features/tweak-spaces.uc.js": {
-      "name": "Library Tweaks - Spaces extras",
-      "description": "Drop indicator for native Spaces.",
-      "include": ["chrome://browser/content/browser.xhtml"],
-      "loadOrder": 26
-    },
     "features/tweak-downloads.uc.js": {
       "name": "Library Tweaks - Downloads extras",
       "description": "On-device files group and rename support for native Downloads.",

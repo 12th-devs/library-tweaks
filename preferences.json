@@ -163,29 +163,6 @@
   },
   {
     "type": "separator",
-    "label": "Spaces",
-    "margin": "20px 0 10px 0"
-  },
-  {
-    "type": "checkbox",
-    "property": "zen.library.tweaks.spaces.drop-indicator",
-    "label": "Drop position indicator",
-    "defaultValue": true
-  },
-  {
-    "type": "text",
-    "label": "Shows an accent line at the exact drop position while dragging over spaces. Visual only; drops behave as native.",
-    "size": "12px",
-    "margin": "0 0 8px 0"
-  },
-  {
-    "type": "text",
-    "label": "Complex space gradients need no toggle: the native section already passes theme gradient strings through, so richer gradients appear automatically when a gradient provider (e.g. BetterZenGradientPicker) supplies them.",
-    "size": "12px",
-    "margin": "0 0 8px 0"
-  },
-  {
-    "type": "separator",
     "label": "Downloads",
     "margin": "20px 0 10px 0"
   },

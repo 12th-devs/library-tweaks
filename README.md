@@ -9,7 +9,7 @@ from the mod's settings page.
 
 - Adds a visible Saves section to the native Zen Library.
 - Supports bookmarks, folders, separators, tags, filtering, drag and drop, and native bookmark editing.
-- Folder open-state is shared with the bookmarks sidebar (kept across restarts), and folders wear the native Zen folder artwork with open/closed states and special icons for the system roots (ported from JustAdumbPrsn/ZenLibraryTweaks).
+- Folders start closed; open-state is shared with the bookmarks sidebar and remembered across restarts, and folders wear the native Zen folder artwork with open/closed states and special icons for the system roots (ported from JustAdumbPrsn/ZenLibraryTweaks).
 - Keyword-first search: a bookmark whose keyword is the address-bar keyword for the first word typed ranks in Top matches above the tree.
 - Picking several tags keeps only bookmarks carrying all of them.
 - Intercepts `Ctrl+D` / `Cmd+D` to save the current page without opening the native bookmark panel.
@@ -78,16 +78,6 @@ needed — and turning it back on re-registers everything the same way.
 - Groups native boost rows under domain headers, enlarges icons into tinted
   tiles, and strikes through disabled boosts — the classic presentation.
 - Clicks, the toggle and the context menu stay 100% native by design.
-
-## Spaces
-
-- **Drop position indicator** (`zen.library.tweaks.spaces.drop-indicator`):
-  an accent line (rows) or card outline follows the cursor while dragging over
-  native spaces. Visual only; drops behave exactly as native.
-  Native already renders its own add-space button, so this mod adds none.
-- Complex gradients need no conversion: native already passes theme gradient
-  strings through untouched, so richer gradients show up automatically when a
-  gradient provider mod supplies them.
 
 ## Downloads
 
