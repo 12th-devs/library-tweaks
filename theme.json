@@ -46,7 +46,7 @@
     },
     "features/tweak-spaces.uc.js": {
       "name": "Library Tweaks - Spaces extras",
-      "description": "Drop indicator and theme re-apply for native Spaces.",
+      "description": "Drop indicator for native Spaces.",
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 26
     },
