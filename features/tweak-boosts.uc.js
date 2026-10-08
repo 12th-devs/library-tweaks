@@ -184,13 +184,22 @@ zen-library-boosts-section .zen-library-boost-row[disabled] .zen-library-boost-i
         clearHeaders(section);
     }
 
+    // The document observer re-runs this on every DOM change it sees, including
+    // our own. The off path must therefore be write-free once cleaned up:
+    // ensuring the style only to remove it again below would append/remove the
+    // <style> element forever and hang the browser.
     function scanDocument() {
+        if (!isOn()) {
+            for (const section of document.querySelectorAll?.("zen-library-boosts-section") || []) {
+                detachSection(section);
+            }
+            removeStyle();
+            return;
+        }
         ensureStyle();
         for (const section of document.querySelectorAll?.("zen-library-boosts-section") || []) {
-            if (isOn()) attachSection(section);
-            else detachSection(section);
+            attachSection(section);
         }
-        if (!isOn()) removeStyle();
     }
 
     function init() {
