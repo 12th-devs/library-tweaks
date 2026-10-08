@@ -3126,7 +3126,6 @@
             this._bookmarksModule = null;
             this._initialized = false;
             this._masterPrefObserver = null;
-            this._onKeyDown = this._onKeyDown.bind(this);
             this._onShowAllBookmarksCommand = this._onShowAllBookmarksCommand.bind(this);
             this._onAddBookmarkCommand = this._onAddBookmarkCommand.bind(this);
             this._onUnload = this._onUnload.bind(this);
@@ -3248,7 +3247,6 @@
                 hasLibraryButton: !!document.getElementById("zen-library-button"),
             });
             window.addEventListener("unload", this._onUnload, { once: true });
-            window.addEventListener("keydown", this._onKeyDown, true);
             window.addEventListener("ZenLibrarySectionsReady", this._onLibraryReady);
             this._watchShowAllBookmarksCommand();
             this._watchNativeLibraryCommandNodes();
@@ -4466,94 +4464,9 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             this._sidebarBoxObserver = null;
         }
 
-        _onKeyDown(e) {
-            if (e.defaultPrevented) return;
-            const isMac = Services.appinfo.OS === "Darwin";
-            const target = e.composedPath ? e.composedPath()[0] : e.target;
-            const name = target && target.localName ? target.localName.toLowerCase() : "";
-            if (name === "input" || name === "textarea" || (target && target.isContentEditable)) return;
-
-            const isSidebarShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
-            const isBookmarksShortcut = e.code === "KeyB" && (isMac ? e.metaKey : e.ctrlKey) && e.shiftKey && !e.altKey;
-            const isSaveShortcut = e.code === "KeyD" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
-            const isHistoryShortcut = e.code === "KeyH" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
-            const isDownloadsShortcut = e.code === "KeyJ" && (isMac ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey;
-            if (isSaveShortcut) {
-                if (!this._isSaveShortcutEnabled()) return;
-                this._saveCurrentPage(e);
-                return;
-            }
-            if (isHistoryShortcut) {
-                if (!this._isHistoryShortcutEnabled()) return;
-                this._openHistory(e);
-                return;
-            }
-            if (isDownloadsShortcut) {
-                if (!this._isDownloadsShortcutEnabled()) return;
-                this._openDownloads(e);
-                return;
-            }
-            if (isSidebarShortcut || isBookmarksShortcut) {
-                this._lastSidebarKeyAt = Date.now();
-                this._openBookmarks(e);
-            }
-        }
-
         _isSaveShortcutEnabled() {
             try { return Services.prefs.getBoolPref("zen.library.tweaks.shortcut.save", true); }
             catch (e) { return true; }
-        }
-
-        _isHistoryShortcutEnabled() {
-            try { return Services.prefs.getBoolPref("zen.library.tweaks.shortcut.history", true); }
-            catch (e) { return true; }
-        }
-
-        _isDownloadsShortcutEnabled() {
-            try { return Services.prefs.getBoolPref("zen.library.tweaks.shortcut.downloads", true); }
-            catch (e) { return true; }
-        }
-
-        _openHistory(event) {
-            event?.preventDefault?.();
-            event?.stopPropagation?.();
-            event?.stopImmediatePropagation?.();
-            try {
-                const Ctor = customElements.get("zen-library");
-                if (Ctor && typeof Ctor.toggle === "function") {
-                    this._registerNativeWhenReady();
-                    Ctor.toggle("history");
-                    return true;
-                }
-            } catch (e) { }
-            try {
-                if (window.gZenLibrary?.openTab) {
-                    window.gZenLibrary.openTab("history");
-                    return true;
-                }
-            } catch (e) { }
-            return false;
-        }
-
-        _openDownloads(event) {
-            event?.preventDefault?.();
-            event?.stopPropagation?.();
-            event?.stopImmediatePropagation?.();
-            try {
-                const Ctor = customElements.get("zen-library");
-                if (Ctor && typeof Ctor.toggle === "function") {
-                    this._registerNativeWhenReady();
-                    Ctor.toggle("downloads");
-                    return true;
-                }
-            } catch (e) { }
-            try {
-                if (window.gZenLibrary?.openTab) {
-                    window.gZenLibrary.openTab("downloads");
-                    return true;
-                }
-            } catch (e) { }
-            return false;
         }
 
         _onUnload() {
@@ -4569,7 +4482,6 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         // Full teardown minus the master pref watcher, so the toggle-off path
         // can later re-init() without a restart.
         _shutdown() {
-            window.removeEventListener("keydown", this._onKeyDown, true);
             window.removeEventListener("unload", this._onUnload);
             window.removeEventListener("ZenLibrarySectionsReady", this._onLibraryReady);
             this._unpatchNativeGetInstance();

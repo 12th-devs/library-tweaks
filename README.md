@@ -51,15 +51,14 @@ needed — and turning it back on re-registers everything the same way.
 
 ## Shortcuts
 
-- **Ctrl+D (Cmd+D)** smart-saves the page
-  (`zen.library.tweaks.shortcut.save`, on by default). Off hands the key back
-  to the native bookmark panel.
-- **Ctrl+H (Cmd+H)** opens the native Library on History
-  (`zen.library.tweaks.shortcut.history`, on by default). Off hands the key
-  back to Firefox.
-- **Ctrl+J (Cmd+J)** opens the native Library on Downloads
-  (`zen.library.tweaks.shortcut.downloads`, on by default). Off hands the key
-  back.
+- **Smart-save on Bookmark This Page**
+  (`zen.library.tweaks.shortcut.save`, on by default). Runs the current-page
+  smart save when Zen's Bookmark This Page shortcut fires, instead of opening
+  the native bookmark panel. Off hands the command back to Firefox.
+- History and Downloads use Zen's own shortcuts — rebind **Show All
+  History**, **Open Downloads**, **Bookmark This Page** and **Show Bookmarks
+  Library** in Settings → Keyboard Shortcuts (`about:preferences#zenCKS`).
+  This mod follows those bindings instead of hardcoding keys.
 
 ## History
 

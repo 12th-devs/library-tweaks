@@ -94,36 +94,12 @@
   {
     "type": "checkbox",
     "property": "zen.library.tweaks.shortcut.save",
-    "label": "Ctrl+D (Cmd+D on macOS) smart-saves the page",
+    "label": "Smart-save on Bookmark This Page",
     "defaultValue": true
   },
   {
     "type": "text",
-    "label": "Saves the current page with generated title and tags instead of opening the native bookmark panel. Off hands the key back to Firefox.",
-    "size": "12px",
-    "margin": "0 0 8px 0"
-  },
-  {
-    "type": "checkbox",
-    "property": "zen.library.tweaks.shortcut.history",
-    "label": "Ctrl+H (Cmd+H on macOS) opens Library History",
-    "defaultValue": true
-  },
-  {
-    "type": "text",
-    "label": "Takes over the history shortcut so it opens the native Library on History instead of the Firefox sidebar. Off hands the key back.",
-    "size": "12px",
-    "margin": "0 0 8px 0"
-  },
-  {
-    "type": "checkbox",
-    "property": "zen.library.tweaks.shortcut.downloads",
-    "label": "Ctrl+J (Cmd+J on macOS) opens Library Downloads",
-    "defaultValue": true
-  },
-  {
-    "type": "text",
-    "label": "Takes over the downloads shortcut so it opens the native Library on Downloads. Off hands the key back.",
+    "label": "Runs the current-page smart save (generated title and tags) when Zen's Bookmark This Page shortcut fires, instead of opening the native bookmark panel. Off hands the command back to Firefox. Rebind it in Settings → Keyboard Shortcuts.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },
