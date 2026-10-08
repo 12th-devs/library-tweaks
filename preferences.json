@@ -29,6 +29,18 @@
     "margin": "0 0 8px 0"
   },
   {
+    "type": "checkbox",
+    "property": "zen.bookmarks.hideOtherRoots",
+    "label": "Hide other root folders",
+    "defaultValue": false
+  },
+  {
+    "type": "text",
+    "label": "Shows only the Saves root folder's contents; hides Menu, Other Bookmarks and Mobile Bookmarks at the root level. Applies immediately, no restart needed.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
     "type": "separator",
     "label": "Media",
     "margin": "20px 0 10px 0"

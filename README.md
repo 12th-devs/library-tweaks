@@ -17,7 +17,7 @@ from the mod's settings page.
 - Uses configured Tidy Downloads AI provider settings, when available, to generate concise save names and up to three tags.
 - Shows a Zen-style save animation, tooltip, undo control, and notification.
 - Supports one mandatory Saves root folder, defaulting to Bookmarks Toolbar.
-- Other top-level Firefox folders (Menu, Other, Mobile) stay visible alongside the Saves contents.
+- Other top-level Firefox folders (Menu, Other, Mobile) stay visible alongside the Saves contents, unless **Hide other root folders** (`zen.bookmarks.hideOtherRoots`, off by default) is on.
 - Natural-language urlbar search: ask "what was that article I bookmarked about X" (or prefix with `bm`) to surface the best matching bookmark; uses local scoring instantly and the configured AI provider to re-rank when available.
 
 Turning the toggle off unregisters the Saves section, the `Ctrl+D` smart save,

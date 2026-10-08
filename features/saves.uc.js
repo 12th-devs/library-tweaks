@@ -29,9 +29,11 @@
             this._tabDropBadge = null;
             this._smartSaveTooltipTimer = null;
             this._rootFolderGuid = null;
+            this._rootVisibilityObserver = null;
         }
 
         static ROOT_PREF = "zen.bookmarks.rootGuid";
+        static HIDE_OTHER_ROOTS_PREF = "zen.bookmarks.hideOtherRoots";
 
         static PLACES_EVENTS = ["bookmark-added", "bookmark-removed", "bookmark-moved", "bookmark-title-changed", "bookmark-url-changed", "bookmark-tags-changed", "bookmark-keyword-changed"];
 
@@ -47,6 +49,31 @@
             this._watchPlaces();
             this._watchAdded();
             this._watchLibraryDrop();
+            this._watchRootVisibility();
+        }
+
+        _hideOtherRoots() {
+            try { return Services.prefs.getBoolPref(ZenLibraryBookmarks.HIDE_OTHER_ROOTS_PREF, false); }
+            catch (e) { return false; }
+        }
+
+        // Re-renders when the root-visibility toggle flips, so hiding takes
+        // effect immediately without a restart.
+        _watchRootVisibility() {
+            if (this._rootVisibilityObserver) return;
+            this._rootVisibilityObserver = {
+                observe: () => {
+                    try { if (this._container?.isConnected) this.renderList(); } catch (e) { }
+                },
+            };
+            try { Services.prefs.addObserver(ZenLibraryBookmarks.HIDE_OTHER_ROOTS_PREF, this._rootVisibilityObserver); }
+            catch (e) { this._rootVisibilityObserver = null; }
+        }
+
+        _unwatchRootVisibility() {
+            if (!this._rootVisibilityObserver) return;
+            try { Services.prefs.removeObserver(ZenLibraryBookmarks.HIDE_OTHER_ROOTS_PREF, this._rootVisibilityObserver); } catch (e) { }
+            this._rootVisibilityObserver = null;
         }
 
         _markSelfMutating() {
@@ -1720,19 +1747,21 @@
             }
             if (rootNode) trees.push(...(rootNode.children || []));
             // Other top-level Firefox folders stay visible as folders alongside
-            // the Saves root contents, so bookmarks outside the Saves root are
-            // reachable (and can be dragged into it).
-            const seenGuids = new Set(trees.map(node => node?.guid).filter(Boolean));
-            for (const guid of systemRootGuids) {
-                if (guid === rootGuid || seenGuids.has(guid)) continue;
-                try {
-                    const tree = await PlacesUtils.promiseBookmarksTree(guid, { includeItemIds: true });
-                    const normalized = await this._normalizeNode(tree, null, workspaceMap);
-                    if (normalized) {
-                        trees.push(normalized);
-                        seenGuids.add(normalized.guid);
-                    }
-                } catch (e) { }
+            // the Saves root contents unless hidden by preference, so bookmarks
+            // outside the Saves root are reachable (and can be dragged into it).
+            if (!this._hideOtherRoots()) {
+                const seenGuids = new Set(trees.map(node => node?.guid).filter(Boolean));
+                for (const guid of systemRootGuids) {
+                    if (guid === rootGuid || seenGuids.has(guid)) continue;
+                    try {
+                        const tree = await PlacesUtils.promiseBookmarksTree(guid, { includeItemIds: true });
+                        const normalized = await this._normalizeNode(tree, null, workspaceMap);
+                        if (normalized) {
+                            trees.push(normalized);
+                            seenGuids.add(normalized.guid);
+                        }
+                    } catch (e) { }
+                }
             }
             this._seedOpenFolders(trees);
             const collectTags = (node) => {
@@ -3064,6 +3093,7 @@
             this._unwatchPlaces();
             this._unwatchAdded();
             this._unwatchLibraryDrop();
+            this._unwatchRootVisibility();
             this._clearSmartSaveTooltip();
             try { clearTimeout(this._libraryPulseTimer); } catch (e) { }
             this._libraryPulseTimer = null;
