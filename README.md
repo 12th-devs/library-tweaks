@@ -59,6 +59,11 @@ needed — and turning it back on re-registers everything the same way.
   History**, **Open Downloads**, **Bookmark This Page** and **Show Bookmarks
   Library** in Settings → Keyboard Shortcuts (`about:preferences#zenCKS`).
   This mod follows those bindings instead of hardcoding keys.
+- **Group Library shortcuts** (`zen.library.tweaks.shortcut.section`, on by
+  default): collects those four shortcuts under one **Library** header in
+  Keyboard Shortcuts instead of leaving them scattered across the native
+  groups. Rows are only relocated, so bindings and conflict handling stay
+  native.
 
 ## History
 

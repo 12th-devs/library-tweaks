@@ -14,6 +14,14 @@
       "name": "Saves urlbar provider",
       "description": "Natural-language bookmark search in the urlbar. Imported once per process."
     },
+    "background/cks-bootstrap.sys.mjs": {
+      "name": "Keyboard Shortcuts section bootstrap",
+      "description": "Registers the about:preferences actor that groups Library shortcuts. Imported once per process."
+    },
+    "background/cks-section-child.sys.mjs": {
+      "name": "Keyboard Shortcuts section actor",
+      "description": "Runs inside about:preferences and relocates Library rows under one header. Loaded by the actor system."
+    },
     "features/saves.uc.js": {
       "name": "Library Tweaks - Saves",
       "description": "Saves (bookmarks) section for the native Zen Library.",
@@ -55,6 +63,12 @@
       "description": "Recently closed tabs and Clear history for native History.",
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 28
+    },
+    "features/tweak-cks-section.uc.js": {
+      "name": "Library Tweaks - Keyboard Shortcuts section",
+      "description": "Groups Library shortcuts under one header in Keyboard Shortcuts settings.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 29
     }
   },
   "tags": [

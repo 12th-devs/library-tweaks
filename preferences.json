@@ -104,6 +104,18 @@
     "margin": "0 0 8px 0"
   },
   {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.shortcut.section",
+    "label": "Group Library shortcuts in Keyboard Shortcuts",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Collects Bookmark This Page, Show All History, Open Downloads and Show Bookmarks Library under one Library header in Settings → Keyboard Shortcuts instead of leaving them scattered. Applies when the pane rebuilds (revisit it after toggling).",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
     "type": "separator",
     "label": "History",
     "margin": "20px 0 10px 0"
