@@ -9,6 +9,7 @@ from the mod's settings page.
 
 - Adds a visible Saves section to the native Zen Library.
 - Supports bookmarks, folders, separators, tags, filtering, drag and drop, and native bookmark editing.
+- Right-click blank space for Bookmark Current Page, Bookmark URL and Add Folder.
 - Folders start closed; open-state is shared with the bookmarks sidebar and remembered across restarts, and folders wear the native Zen folder artwork with open/closed states and special icons for the system roots (ported from JustAdumbPrsn/ZenLibraryTweaks).
 - Keyword-first search: a bookmark whose keyword is the address-bar keyword for the first word typed ranks in Top matches above the tree.
 - Picking several tags keeps only bookmarks carrying all of them.

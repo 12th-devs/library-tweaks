@@ -1562,6 +1562,9 @@
         render() {
             const container = this.el("div", { className: "library-list-container bookmarks-list-container" });
             this._container = container;
+            // Blank-space menu: rows and separators stop propagation on their
+            // own menus, so only true empty area reaches here.
+            container.oncontextmenu = (event) => this._openBlankSpaceMenu(event);
             this.renderList();
             this.library.enterContent(container);
             requestAnimationFrame(() => container.classList.add("scrollbar-visible"));
@@ -2253,6 +2256,75 @@
             popup.addEventListener("popuphidden", () => popup.remove(), { once: true });
             (document.getElementById("mainPopupSet") || document.body).appendChild(popup);
             popup.openPopupAtScreen(event.screenX, event.screenY, true);
+        }
+
+        // Blank-space menu for the list area: rows and separators stop
+        // propagation on their own menus, so reaching here means empty area
+        // (the guard below covers any stragglers). Actions target the Saves
+        // root folder.
+        _openBlankSpaceMenu(event) {
+            try {
+                if (event.target?.closest?.(".bookmark-row, .bookmark-separator-row")) return;
+            } catch (e) { }
+            event.preventDefault();
+            document.getElementById("zen-bookmarks-blank-menu")?.remove();
+            const popup = document.createXULElement("menupopup");
+            popup.id = "zen-bookmarks-blank-menu";
+            const addItem = (label, command, disabled = false) => {
+                const item = document.createXULElement("menuitem");
+                item.setAttribute("label", label);
+                if (disabled) item.setAttribute("disabled", "true");
+                item.addEventListener("command", command, { once: true });
+                popup.appendChild(item);
+            };
+            let currentUrl = "";
+            try {
+                currentUrl = window.gBrowser?.selectedBrowser?.currentURI?.spec || "";
+            } catch (e) { }
+            addItem("Bookmark Current Page", () => this.saveCurrentPageWithSmartTags(), !this._isSafeBookmarkUrl(currentUrl));
+            addItem("Bookmark URL...", () => this._bookmarkUrl());
+            popup.appendChild(document.createXULElement("menuseparator"));
+            addItem("Add Folder", () => this._addFolderAtRoot());
+            popup.addEventListener("popuphidden", () => popup.remove(), { once: true });
+            (document.getElementById("mainPopupSet") || document.body).appendChild(popup);
+            popup.openPopupAtScreen(event.screenX, event.screenY, true);
+        }
+
+        // Prompts for a URL, files it under the Saves root, then hands it to
+        // the native properties dialog so title and tags are completed there.
+        async _bookmarkUrl() {
+            try {
+                const input = prompt("Bookmark URL", "https://");
+                if (input == null) return;
+                const trimmed = String(input).trim();
+                if (!trimmed) return;
+                let uri = null;
+                try { uri = Services.io.newURI(trimmed); } catch (e) { return; }
+                if (!uri || !["http", "https"].includes(uri.scheme)) return;
+                const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
+                const rootGuid = await this._rootGuid();
+                if (!rootGuid) return;
+                this._markSelfMutating();
+                const inserted = await PlacesUtils.bookmarks.insert({
+                    parentGuid: rootGuid,
+                    url: uri.spec,
+                    title: uri.spec,
+                    index: PlacesUtils.bookmarks.DEFAULT_INDEX
+                });
+                if (inserted?.guid) await this._editBookmark({ guid: inserted.guid });
+            } catch (e) {
+                console.error("[ZenLibrary Bookmarks] bookmark URL failed:", e);
+            }
+        }
+
+        async _addFolderAtRoot() {
+            try {
+                const rootGuid = await this._rootGuid();
+                if (!rootGuid) return;
+                await this._addFolder({ isFolder: true, guid: rootGuid });
+            } catch (e) {
+                console.error("[ZenLibrary Bookmarks] add folder failed:", e);
+            }
         }
 
         async _setRootFolder(node) {
