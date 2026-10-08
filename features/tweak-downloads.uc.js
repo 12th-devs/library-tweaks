@@ -2,11 +2,14 @@
 
 // Library Tweaks — Downloads enhancements for the native Zen Library.
 //
-// 1. System-wide downloads (toggle, default off, like the reference mod):
-//    an appended "On this device" group lists top-level files/folders from the
-//    OS Downloads folder that have no download-history entry. Append-only: it
-//    never touches Lit-managed nodes, re-applies after native re-renders, and
-//    mirrors the native search text plus type/when filters.
+// 1. Unified downloads (toggle, default off): the native download-history
+//    rows are hidden and the section shows the actual top-level files and
+//    folders from the OS Downloads folder instead. Files downloaded in the
+//    browser keep their source URL (Copy Download Link in the menu). The
+//    group never touches Lit-managed nodes, re-applies after native
+//    re-renders, mirrors the native search text plus type/when filters, and
+//    paints in stages on cold open (names first, then stats and links) like
+//    the media tab.
 // 2. Rename in the native context menu (toggle, default on): a "Rename file"
 //    item is appended to the native downloads popup, resolved against the
 //    live Downloads list, and applied on disk.
@@ -64,6 +67,28 @@
 
     function removeDimStyle() {
         try { document.getElementById(DIM_STYLE_ID)?.remove(); } catch (e) { }
+    }
+
+    // Hides the native history rows (and native empty state) while the unified
+    // group is shown. Our own rows and empty state live inside GROUP_CLASS,
+    // which is exempt. Added/removed with the toggle, so native rendering is
+    // untouched and returns immediately when turned off.
+    const UNIFIED_STYLE_ID = "lt-downloads-unified-style";
+    const UNIFIED_CSS =
+        `zen-library-downloads-section .zen-library-search-results > .zen-library-group:not(.${GROUP_CLASS}) { display: none; }\n` +
+        `zen-library-downloads-section .zen-library-search-results > .zen-library-empty { display: none; }\n` +
+        `zen-library-downloads-section .${GROUP_CLASS} .zen-library-empty { display: block; }`;
+
+    function ensureUnifiedStyle() {
+        if (document.getElementById(UNIFIED_STYLE_ID)) return;
+        const style = document.createElement("style");
+        style.id = UNIFIED_STYLE_ID;
+        style.textContent = UNIFIED_CSS;
+        try { document.documentElement.appendChild(style); } catch (e) { }
+    }
+
+    function removeUnifiedStyle() {
+        try { document.getElementById(UNIFIED_STYLE_ID)?.remove(); } catch (e) { }
     }
 
     function clearMissingMarks() {
@@ -171,27 +196,98 @@
         return `${parseFloat((n / Math.pow(1024, i)).toFixed(1))} ${units[i]}`;
     }
 
+    // Same shaping as the native row subtitle: scheme, "www." and trailing
+    // slash go away so the source host reads like the classic library.
+    function formatUrl(url) {
+        return String(url || "").replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, "");
+    }
+
+    function copyString(text) {
+        try {
+            Cc["@mozilla.org/widget/clipboardhelper;1"]
+                .getService(Ci.nsIClipboardHelper)
+                .copyString(text);
+        } catch (e) { }
+    }
+
     /* ------------------------------------------------------- disk scan */
 
     let scanCache = null;
     let scanPromise = null;
     let histCache = null;
 
-    async function historyPaths() {
+    // Normalized on-disk path -> source URL for files the browser downloaded.
+    // Session lists come first so a just-finished download wins over an older
+    // history row for the same path.
+    async function historySources() {
         const now = Date.now();
-        if (histCache && now - histCache.at < HIST_CACHE_TTL_MS) return histCache.paths;
-        const paths = new Set();
+        if (histCache && now - histCache.at < HIST_CACHE_TTL_MS) return histCache.sources;
+        const sources = new Map();
         try {
-            const { DownloadHistory } = ChromeUtils.importESModule("resource://gre/modules/DownloadHistory.sys.mjs");
-            const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
-            const list = await DownloadHistory.getList({ type: Downloads.ALL });
-            const all = await list.getAll();
-            for (const d of all) {
-                try { if (d?.target?.path) paths.add(normPath(d.target.path)); } catch (e) { }
+            for (const list of await unifiedLists()) {
+                let all = [];
+                try { all = await list.getAll(); } catch (e) { continue; }
+                for (const d of all) {
+                    try {
+                        if (!d?.target?.path) continue;
+                        const key = normPath(d.target.path);
+                        if (!sources.has(key) && d.source?.url) {
+                            sources.set(key, String(d.source.url));
+                        }
+                    } catch (e) { }
+                }
             }
         } catch (e) { }
-        histCache = { at: now, paths };
-        return paths;
+        histCache = { at: now, sources };
+        return sources;
+    }
+
+    async function downloadsFolder() {
+        try {
+            const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
+            try {
+                const preferred = await Downloads.getPreferredDownloadsDirectory();
+                if (preferred) return preferred;
+            } catch (e) { }
+            try { return await Downloads.getSystemDownloadsDirectory(); } catch (e) { }
+        } catch (e) { }
+        return "";
+    }
+
+    function acceptLeafName(leaf) {
+        return !!leaf && !leaf.startsWith(".") && !leaf.endsWith(".part");
+    }
+
+    async function isHiddenSystem(path) {
+        try {
+            const attrs = await IOUtils.getWindowsAttributes(path);
+            return !!(attrs.hidden || attrs.system);
+        } catch (e) { return false; }
+    }
+
+    // Name-only snapshot: one directory read, no per-file stat. Painted
+    // immediately on cold open; the stat pass refines right after, like the
+    // media tab paints seeds before the folder walk finishes.
+    async function scanDiskNames() {
+        const folder = await downloadsFolder();
+        if (!folder) return [];
+        let children = [];
+        try { children = await IOUtils.getChildren(folder); } catch (e) { return []; }
+        let isWin = false;
+        try { isWin = Services.appinfo.OS === "WINNT"; } catch (e) { }
+        const out = [];
+        for (let i = 0; i < children.length; i += SCAN_CHUNK_SIZE) {
+            const batch = await Promise.all(children.slice(i, i + SCAN_CHUNK_SIZE).map(async (path) => {
+                try {
+                    const leaf = PathUtils.filename(path);
+                    if (!acceptLeafName(leaf)) return null;
+                    if (isWin && await isHiddenSystem(path)) return null;
+                    return { targetPath: path, filename: leaf };
+                } catch (e) { return null; }
+            }));
+            for (const entry of batch) if (entry) out.push(entry);
+        }
+        return out;
     }
 
     async function scanDisk() {
@@ -201,14 +297,9 @@
         }
         if (scanPromise) return scanPromise;
         scanPromise = (async () => {
-            const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
-            let folder = "";
-            try { folder = await Downloads.getPreferredDownloadsDirectory(); } catch (e) { }
-            if (!folder) {
-                try { folder = await Downloads.getSystemDownloadsDirectory(); } catch (e) { }
-            }
+            const folder = await downloadsFolder();
             if (!folder) return [];
-            const known = await historyPaths();
+            const sources = await historySources();
             let children = [];
             try { children = await IOUtils.getChildren(folder); } catch (e) { return []; }
             let isWin = false;
@@ -218,23 +309,19 @@
                 const batch = await Promise.all(children.slice(i, i + SCAN_CHUNK_SIZE).map(async (path) => {
                     try {
                         const leaf = PathUtils.filename(path);
-                        if (!leaf || leaf.startsWith(".") || leaf.endsWith(".part")) return null;
-                        if (isWin) {
-                            try {
-                                const attrs = await IOUtils.getWindowsAttributes(path);
-                                if (attrs.hidden || attrs.system) return null;
-                            } catch (e) { }
-                        }
+                        if (!acceptLeafName(leaf)) return null;
+                        if (isWin && await isHiddenSystem(path)) return null;
                         const info = await IOUtils.stat(path);
                         if (info.type !== "regular" && info.type !== "directory") return null;
-                        if (known.has(normPath(path))) return null;
+                        const key = normPath(path);
                         return {
-                            id: "disk|" + normPath(path),
+                            id: "disk|" + key,
                             filename: leaf,
                             targetPath: path,
                             size: info.type === "directory" ? 0 : (info.size || 0),
                             timestamp: info.lastModified || 0,
                             isFolder: info.type === "directory",
+                            sourceUrl: sources.get(key) || "",
                         };
                     } catch (e) {
                         return null;
@@ -357,6 +444,37 @@
         } catch (e) { }
     }
 
+    // Same payload native download rows carry, so files drag out to Explorer,
+    // tabs, and other apps exactly like native ones.
+    function onDiskDragStart(event, item) {
+        let file = null;
+        try { file = nsFile(item.targetPath); } catch (e) { }
+        if (!file) {
+            event.preventDefault();
+            return;
+        }
+        try {
+            if (!file.exists()) {
+                event.preventDefault();
+                return;
+            }
+        } catch (e) {
+            event.preventDefault();
+            return;
+        }
+        const { dataTransfer } = event;
+        try {
+            dataTransfer.mozSetDataAt("application/x-moz-file", file, 0);
+        } catch (e) {
+            event.preventDefault();
+            return;
+        }
+        dataTransfer.effectAllowed = "copyMove";
+        try { dataTransfer.setData("text/uri-list", Services.io.newFileURI(file).spec); } catch (e) { }
+        try { dataTransfer.addElement(event.currentTarget); } catch (e) { }
+        try { Services.zen.playHapticFeedback(); } catch (e) { }
+    }
+
     function ensureDiskMenu() {
         let popup = document.getElementById(DISK_MENU_ID);
         if (popup) return popup;
@@ -365,6 +483,7 @@
         for (const [id, label] of [
             ["lt-disk-ctx-open", "Open"],
             ["lt-disk-ctx-show", "Show in Folder"],
+            ["lt-disk-ctx-copy-link", "Copy Download Link"],
             ["lt-disk-ctx-rename", "Rename file"],
             ["lt-disk-ctx-delete", "Delete"],
         ]) {
@@ -378,9 +497,25 @@
         return popup;
     }
 
+    // Labels follow the native downloads menu: Open carries the file name
+    // (same Fluent string native passes {name} to), Show and Copy Link stay
+    // generic like native, and our Rename/Delete name the file too.
+    function setMenuLabel(id, l10nId, args, fallback) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        try {
+            document.l10n.setAttributes(el, l10nId, args);
+        } catch (e) {
+            try {
+                el.removeAttribute("data-l10n-id");
+                el.setAttribute("label", fallback);
+            } catch (_e) { }
+        }
+    }
+
     function showDiskMenu(event, item, section) {
         const popup = ensureDiskMenu();
-        for (const id of ["lt-disk-ctx-open", "lt-disk-ctx-show", "lt-disk-ctx-rename", "lt-disk-ctx-delete"]) {
+        for (const id of ["lt-disk-ctx-open", "lt-disk-ctx-show", "lt-disk-ctx-copy-link", "lt-disk-ctx-rename", "lt-disk-ctx-delete"]) {
             const el = document.getElementById(id);
             if (el) el.replaceWith(el.cloneNode(true));
         }
@@ -393,23 +528,43 @@
         on("lt-disk-ctx-show", () => {
             try { nsFile(item.targetPath).reveal(); } catch (e) { }
         });
+        setMenuLabel("lt-disk-ctx-open", "library-downloads-menu-open", { name: item.filename }, `Open ${item.filename}`);
+        setMenuLabel("lt-disk-ctx-show", "downloads-cmd-show-menuitem-2", null, "Show in Folder");
+        setMenuLabel("lt-disk-ctx-copy-link", "downloads-cmd-copy-download-link", null, "Copy Download Link");
+        const copyLinkEl = document.getElementById("lt-disk-ctx-copy-link");
+        if (copyLinkEl) copyLinkEl.hidden = !item.sourceUrl;
+        on("lt-disk-ctx-copy-link", () => copyString(item.sourceUrl));
         const fileOnly = !item.isFolder;
         const renameEl = document.getElementById("lt-disk-ctx-rename");
         const deleteEl = document.getElementById("lt-disk-ctx-delete");
-        if (renameEl) renameEl.hidden = !fileOnly;
-        if (deleteEl) deleteEl.hidden = !fileOnly;
+        if (renameEl) {
+            try { renameEl.setAttribute("label", `Rename ${item.filename}`); } catch (e) { }
+            renameEl.hidden = !fileOnly || !renameOn();
+        }
+        if (deleteEl) {
+            try { deleteEl.setAttribute("label", `Delete ${item.filename}`); } catch (e) { }
+            deleteEl.hidden = !fileOnly;
+        }
         on("lt-disk-ctx-rename", async () => {
             const input = { value: item.filename };
             const ok = Services.prompt.prompt(window, "Rename File", null, input, null, { value: false });
             const name = ok ? input.value.trim() : "";
             if (!name || name === item.filename) return;
             try {
+                const oldKey = normPath(item.targetPath);
                 const file = nsFile(item.targetPath);
                 if (!file.exists()) return;
                 file.moveTo(file.parent, name);
-                item.filename = name;
-                item.targetPath = file.path;
-                item.id = "disk|" + normPath(file.path);
+                const newPath = file.path;
+                // Point any browser download entries at the new path so the
+                // source-link association (and delayed history writes) follow
+                // the rename instead of going stale.
+                try {
+                    for (const match of await resolveDownloadsByPath(oldKey)) {
+                        try { match.target.path = newPath; } catch (e) { }
+                        try { await match.refresh?.(); } catch (e) { }
+                    }
+                } catch (e) { console.warn("[LibraryTweaks] disk rename: history sync failed:", e); }
                 clearAllCaches();
                 await applyGroup(section);
             } catch (e) { console.error("[LibraryTweaks] disk rename failed:", e); }
@@ -432,6 +587,8 @@
         row.className = "zen-library-row lt-disk-row";
         row.tabIndex = 0;
         row.title = item.targetPath;
+        row.draggable = true;
+        row.addEventListener("dragstart", (event) => onDiskDragStart(event, item));
         const icon = document.createElement("img");
         icon.className = "zen-library-row-icon";
         icon.alt = "";
@@ -443,7 +600,16 @@
         title.textContent = item.filename;
         const sub = document.createElement("span");
         sub.className = "zen-library-row-subtitle";
-        sub.textContent = item.isFolder ? "Folder" : formatSize(item.size);
+        if (item.provisional) {
+            sub.textContent = "…";
+        } else if (item.isFolder) {
+            sub.textContent = "Folder";
+        } else if (item.sourceUrl) {
+            const host = formatUrl(item.sourceUrl);
+            sub.textContent = host ? `${formatSize(item.size)} — ${host}` : formatSize(item.size);
+        } else {
+            sub.textContent = formatSize(item.size);
+        }
         text.append(title, sub);
         row.append(icon, text);
         row.addEventListener("click", () => openDiskItem(item));
@@ -469,10 +635,39 @@
         }, 0);
     }
 
-    // Append-only group at the end of native results. Signature-guarded so our
-    // own insertions never retrigger the observer loop. Applies the same
-    // search text, type pills and when-filters native does, so the group
-    // reads as part of the section rather than an unfiltered appendix.
+    // Builds (or skips, when the signature matches) the unified group. Only
+    // our own group is ever touched — native nodes are left alone. The scroll
+    // container itself is native and persists, so rebuilding rows never jumps
+    // scroll position.
+    function renderGroup(section, results, visible, sig) {
+        const existing = results.querySelector(":scope > ." + GROUP_CLASS);
+        if (existing?.dataset.sig === sig) return;
+        existing?.remove();
+        const group = document.createElement("div");
+        group.className = "zen-library-group " + GROUP_CLASS;
+        group.dataset.sig = sig;
+        if (!visible.length) {
+            const empty = document.createElement("div");
+            empty.className = "zen-library-empty";
+            empty.setAttribute("data-l10n-id", "library-downloads-empty");
+            group.appendChild(empty);
+        } else {
+            for (const item of visible) group.appendChild(diskRow(item, section));
+        }
+        results.appendChild(group);
+    }
+
+    // Unified group replacing the native history rows (hidden via UNIFIED_CSS).
+    // Signature-guarded so our own insertions never retrigger the observer
+    // loop. Applies the same search text, type pills and when-filters native
+    // does, so the list reads as the section itself. Always rendered while
+    // the toggle is on — with our own empty state when nothing matches.
+    //
+    // Cold opens paint in stages, like the media tab: filenames first (one
+    // directory read, no per-file stat or history lookup), then the full
+    // pass refines sizes, folders, dates and source links. Name/type filters
+    // already work on filenames; the date filter needs stats, so it waits
+    // for the full pass instead of flashing wrong rows.
     async function applyGroup(section) {
         let results = section.querySelector?.(".zen-library-search-results");
         if (!results) return;
@@ -492,40 +687,73 @@
                 const types = diskActiveTypes(section);
                 const whenDays = diskActiveWhenDays(section);
                 const cutoff = whenDays ? Date.now() - whenDays * MS_PER_DAY : 0;
+                const matchesNameType = (entry) => {
+                    if (filter && !entry.filename.toLowerCase().includes(filter)) return false;
+                    if (types.length && !types.includes(diskFileType(entry))) return false;
+                    return true;
+                };
+                const warm = !!(scanCache && Date.now() - scanCache.at < SCAN_CACHE_TTL_MS && scanCache.items);
+                if (!warm && !cutoff) {
+                    const names = await scanDiskNames();
+                    if (!section.isConnected) return;
+                    results = section.querySelector?.(".zen-library-search-results");
+                    if (!results || !results.isConnected) return;
+                    const provisional = names.filter(matchesNameType).map(entry => ({
+                        id: "disk|" + normPath(entry.targetPath),
+                        filename: entry.filename,
+                        targetPath: entry.targetPath,
+                        size: 0,
+                        timestamp: 0,
+                        isFolder: false,
+                        sourceUrl: "",
+                        provisional: true,
+                    }));
+                    renderGroup(section, results, provisional,
+                        "provisional\n" + filter + "\n" + types.join(",") + "\n" +
+                        provisional.map(i => i.id).join("\n"));
+                    if (!section.isConnected) return;
+                    results = section.querySelector?.(".zen-library-search-results");
+                    if (!results || !results.isConnected) return;
+                }
                 const items = await scanDisk();
                 if (!section.isConnected) return;
                 results = section.querySelector?.(".zen-library-search-results");
                 if (!results || !results.isConnected) return;
                 const visible = items.filter(i => {
-                    if (filter && !i.filename.toLowerCase().includes(filter)) return false;
-                    if (types.length && !types.includes(diskFileType(i))) return false;
+                    if (!matchesNameType(i)) return false;
                     if (cutoff && !(i.timestamp >= cutoff)) return false;
                     return true;
                 });
-                const sig = filter + "\n" + types.join(",") + "\n" + (whenDays || "") + "\n" + visible.map(i => i.id).join("\n");
-                const existing = results.querySelector(":scope > ." + GROUP_CLASS);
-                if (existing?.dataset.sig === sig) {
-                    if (!section._ltQueued) return;
-                    continue;
-                }
-                existing?.remove();
-                if (!visible.length) {
-                    if (!section._ltQueued) return;
-                    continue;
-                }
-                const group = document.createElement("div");
-                group.className = "zen-library-group " + GROUP_CLASS;
-                group.dataset.sig = sig;
-                const header = document.createElement("h3");
-                header.textContent = "On this device";
-                group.appendChild(header);
-                for (const item of visible) group.appendChild(diskRow(item, section));
-                results.appendChild(group);
+                renderGroup(section, results, visible,
+                    filter + "\n" + types.join(",") + "\n" + (whenDays || "") + "\n" +
+                    visible.map(i => i.id + "|" + (i.sourceUrl || "")).join("\n"));
             } while (section._ltQueued);
         } finally {
             section._ltApplying = false;
             section._ltQueued = false;
         }
+    }
+
+    // Every session/history download entry still pointing at an on-disk path
+    // (for rename follow-up). Matched by exact path, so same-named files from
+    // different sites never collide.
+    async function resolveDownloadsByPath(pathKey) {
+        const out = [];
+        try {
+            for (const list of await unifiedLists()) {
+                let all = [];
+                try { all = await list.getAll(); } catch (e) { continue; }
+                for (const download of all) {
+                    try {
+                        if (download?.target?.path && normPath(download.target.path) === pathKey &&
+                            !out.includes(download)) {
+                            out.push(download);
+                        }
+                    } catch (e) { }
+                }
+            }
+        } catch (e) { }
+        return out;
     }
 
     /* ------------------------------------------------------- native rename */
@@ -740,7 +968,31 @@
         sections: new Map(),
         docObserver: null,
         prefObservers: [],
+        dlView: null,
     };
+
+    // Finished downloads land on disk behind the scan TTL; invalidate on
+    // completion so they show up immediately. Progress ticks (stopped=false)
+    // are ignored so active downloads don't cause rescan storms.
+    async function watchDownloadList() {
+        if (state.dlView) return;
+        try {
+            const { Downloads } = ChromeUtils.importESModule("resource://gre/modules/Downloads.sys.mjs");
+            const list = await Downloads.getList(Downloads.ALL);
+            state.dlView = {
+                onDownloadChanged: (download) => {
+                    try { if (!download?.stopped) return; } catch (e) { return; }
+                    clearAllCaches();
+                    for (const section of state.sections.keys()) {
+                        try { scheduleApply(section); } catch (e) { }
+                    }
+                },
+            };
+            await list.addView(state.dlView);
+        } catch (e) {
+            state.dlView = null;
+        }
+    }
 
     function attachSection(section) {
         if (!section) return;
@@ -794,6 +1046,8 @@
 
     function scanDocument() {
         ensureNativeMenuItem();
+        if (systemOn()) ensureUnifiedStyle();
+        else removeUnifiedStyle();
         if (dimOn()) ensureDimStyle();
         else {
             removeDimStyle();
@@ -825,6 +1079,7 @@
 
     function init() {
         scanDocument();
+        try { watchDownloadList(); } catch (e) { }
         if (state.docObserver) return;
         state.docObserver = new MutationObserver(() => scanDocument());
         try {

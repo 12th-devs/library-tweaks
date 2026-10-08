@@ -204,12 +204,12 @@
   {
     "type": "checkbox",
     "property": "zen.library.tweaks.downloads.system",
-    "label": "Also show files from the Downloads folder",
+    "label": "Show Downloads folder instead of history",
     "defaultValue": false
   },
   {
     "type": "text",
-      "label": "Appends an On this device group with top-level Downloads-folder files and folders that have no history entry (hidden/partial skipped), with Open, Show in Folder, Rename and Delete. Respects the native search term and type/date filters.",
+      "label": "Replaces the browser download history with the actual top-level files and folders in the Downloads folder (hidden/partial skipped), with Open, Show in Folder, Rename and Delete. Files downloaded in the browser keep their source link via Copy Download Link. Respects the native search term and type/date filters.",
     "size": "12px",
     "margin": "0 0 8px 0"
   },

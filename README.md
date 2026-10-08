@@ -94,13 +94,18 @@ needed — and turning it back on re-registers everything the same way.
 
 ## Downloads
 
-- **Also show files from the Downloads folder**
-  (`zen.library.tweaks.downloads.system`, off by default): appends an
-  On this device group with top-level Downloads-folder files and folders that
-  have no history entry (hidden/partial skipped). Device rows offer Open, Show
-  in Folder, Rename and Delete, and respect the native search term and type/date filters.
+- **Show Downloads folder instead of history**
+  (`zen.library.tweaks.downloads.system`, off by default): hides the browser
+  download history and shows the actual top-level files and folders in the
+  Downloads folder instead (hidden/partial skipped). Rows offer Open, Show
+  in Folder, Rename and Delete with the file name in each label like the
+  native menu; files downloaded in the browser keep their source link via
+  Copy Download Link, and renaming one follows its history entries to the
+  new path. Rows drag out to Explorer, tabs and other apps, and cold opens
+  paint filenames instantly with sizes and links filling in right after.
+  Respects the native search term and type/date filters.
 - **Rename file** (`zen.library.tweaks.downloads.rename`): adds renaming to
-  the native download menu, resolved against live session + history downloads.
+  the download context menus, resolved against live session + history downloads.
   Renaming updates every matching entry, refreshes the file on disk and
   re-renders the section so the new name is visible immediately.
 - **Grey out moved or missing files**
