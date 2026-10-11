@@ -9,11 +9,12 @@ from the mod's settings page.
 
 - Adds a visible Saves section to the native Zen Library.
 - Supports bookmarks, folders, separators, tags, filtering, drag and drop, and native bookmark editing.
+- Rows, folders, separators and the tab icon copy the upstream look (native row structure, animated folder open/close, upstream animated tab sprite); data, menus, drag logic and tag pills stay ours.
 - Right-click blank space for Bookmark Current Page, Bookmark URL and Add Folder.
 - Folders start closed; open-state is shared with the bookmarks sidebar and remembered across restarts, and folders wear the native Zen folder artwork with open/closed states and special icons for the system roots (ported from JustAdumbPrsn/ZenLibraryTweaks).
 - Keyword-first search: a bookmark whose keyword is the address-bar keyword for the first word typed ranks in Top matches above the tree.
 - Picking several tags keeps only bookmarks carrying all of them.
-- Intercepts `Ctrl+D` / `Cmd+D` to save the current page without opening the native bookmark panel.
+- Intercepts the Bookmark This Page command to save the current page without opening the native bookmark panel (rebind it in Settings → Keyboard Shortcuts).
 - Uses configured Tidy Downloads AI provider settings, when available, to generate concise save names and up to three tags.
 - Shows a Zen-style save animation, tooltip, undo control, and notification.
 - Supports one mandatory Saves root folder, defaulting to Bookmarks Toolbar.
@@ -77,6 +78,13 @@ needed — and turning it back on re-registers everything the same way.
   right-click any native history row for **Copy**, **Forget About This Site**
   and **Delete**, mirroring the classic library menu. The visit is resolved
   through Places search; native sections refresh themselves after each action.
+
+## Routing — `zen.library.tweaks.routing.enabled`
+
+- Adds a **Routing** tab after Spaces listing Zen's space-routing rules
+  (link pattern → space, contains/exact/regex) with search, create, edit and
+  remove, plus the default route for links from other apps. Skipped in
+  private windows. Ported from JustAdumbPrsn/ZenLibraryTweaks (`main`).
 
 ## Boosts — `zen.library.tweaks.boosts.ui`
 

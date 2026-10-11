@@ -146,6 +146,23 @@
   },
   {
     "type": "separator",
+    "label": "Routing",
+    "margin": "20px 0 10px 0"
+  },
+  {
+    "type": "checkbox",
+    "property": "zen.library.tweaks.routing.enabled",
+    "label": "Space Routing section",
+    "defaultValue": true
+  },
+  {
+    "type": "text",
+    "label": "Adds a Routing tab that lists Zen's space-routing rules (link pattern to space) with search, create, edit and remove. Skipped in private windows. Toggling applies immediately, no restart needed.",
+    "size": "12px",
+    "margin": "0 0 8px 0"
+  },
+  {
+    "type": "separator",
     "label": "Boosts",
     "margin": "20px 0 10px 0"
   },

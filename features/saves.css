@@ -1,4 +1,7 @@
-/* BOOKMARKS PSEUDO-SECTION */
+/* BOOKMARKS TREE (upstream UI): native .zen-library-row structure with folder
+   wrappers, animated children and line separators. Tag pills, toasts and the
+   header below stay ours. Generic .zen-library-row overrides are scoped to
+   our section so native rows elsewhere are untouched. */
 .bookmarks-tree {
     display: flex;
     flex-direction: column;
@@ -6,121 +9,165 @@
     padding: 8px 6px 18px;
 }
 
-.bookmark-row {
-    min-height: 42px;
-    padding-inline-start: calc(10px + var(--bookmark-depth, 0) * 14px);
-    padding-inline-end: 10px;
-    gap: 10px;
-    position: relative;
-    transition: background-color 120ms ease, transform 140ms ease, opacity 140ms ease;
+zen-library-bookmarks-section {
+    /* The sidebar indents each folder level by the same amount. */
+    --zen-library-folder-indent: 14px;
 }
 
-.bookmark-row[dragged] {
+/* Long lists only pay for the rows that are on screen. */
+zen-library-bookmarks-section .zen-library-row:not(.zen-library-folder-row, .zen-library-separator) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 56px;
+}
+
+zen-library-bookmarks-section .zen-library-row {
+    position: relative;
+}
+
+zen-library-bookmarks-section .zen-library-row[dragged] {
     opacity: 0.45;
 }
 
-.bookmark-row[drop-into] {
+zen-library-bookmarks-section .zen-library-row[drop-into] {
     background: color-mix(in srgb, var(--zen-primary-color, currentColor) 18%, transparent);
 }
 
-.bookmark-row[drop-before]::before,
-.bookmark-row[drop-after]::before {
+zen-library-bookmarks-section .zen-library-row[drop-before]::before,
+zen-library-bookmarks-section .zen-library-row[drop-after]::before {
     content: "";
     position: absolute;
-    left: calc(10px + var(--bookmark-depth, 0) * 14px);
+    left: 10px;
     right: 10px;
     height: 2px;
     border-radius: 999px;
     background: var(--zen-primary-color, currentColor);
 }
 
-.bookmark-row[drop-before]::before {
+zen-library-bookmarks-section .zen-library-row[drop-before]::before {
     top: -1px;
 }
 
-.bookmark-row[drop-after]::before {
+zen-library-bookmarks-section .zen-library-row[drop-after]::before {
     bottom: -1px;
 }
 
-.bookmark-row-icon,
-.bookmark-row-favicon {
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
+zen-library-bookmarks-section .zen-library-row-actions {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
 }
 
-.bookmark-row-icon {
+zen-library-bookmarks-section .zen-library-row:hover .zen-library-row-actions,
+zen-library-bookmarks-section .zen-library-row:focus-within .zen-library-row-actions {
+    display: flex;
+}
+
+/* Favicon fallback when page-icon fails: globe glyph. */
+zen-library-bookmarks-section img.zen-library-row-icon.page {
     background-color: currentColor;
     opacity: 0.72;
     mask-repeat: no-repeat;
     mask-position: center;
     mask-size: contain;
+    mask-image: url("chrome://browser/skin/zen-icons/globe.svg");
 }
 
-.bookmark-row-favicon {
-    object-fit: contain;
-    border-radius: 4px;
-}
-
-.bookmark-row-icon.folder {
-    mask-image: url("chrome://browser/skin/zen-icons/folder.svg");
+/* Folder glyph: CSS mask fallback until _syncFolderIcons injects the
+   sidebar's own artwork. */
+.zen-library-folder-icon {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    background-color: currentColor;
     opacity: 0.82;
+    mask: url("chrome://browser/skin/zen-icons/folder.svg") center / contain no-repeat;
+    pointer-events: none;
 }
 
 /* Native Zen folder artwork (ported improvement): once _syncFolderIcons
-   injects the sidebar's own glyph, the div only frames it — the mask
-   fallback above applies until then. */
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) {
-    flex: none;
+   injects the sidebar's own glyph, the span only frames it. */
+.zen-library-folder-icon:has(> svg) {
     width: 28px;
     height: 28px;
     margin-block: -6px;
     margin-inline: -4px -5px;
-    pointer-events: none;
+    background: none;
+    opacity: 1;
+    mask-image: none;
 }
 
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg {
+.zen-library-folder-icon:has(> svg) svg {
     display: block;
     filter: contrast(125%);
 }
 
 /* Sidebar folders only show the dots while a collapsed folder is active. */
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) .dots {
+.zen-library-folder-icon:has(> svg) .dots {
     opacity: 0;
 }
 
 /* The open and closed look from zen-folder-icon.inc.css. */
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg g,
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg rect,
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg path {
+.zen-library-folder-icon:has(> svg) svg g,
+.zen-library-folder-icon:has(> svg) svg rect,
+.zen-library-folder-icon:has(> svg) svg path {
     transition:
         transform 0.3s cubic-bezier(0.42, 0, 0, 1),
         opacity 0.3s cubic-bezier(0.42, 0, 0, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg g,
-    .bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg rect,
-    .bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg path {
+    .zen-library-folder-icon:has(> svg) svg g,
+    .zen-library-folder-icon:has(> svg) svg rect,
+    .zen-library-folder-icon:has(> svg) svg path {
         transition: none;
     }
 }
 
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg[state="open"] .back {
+.zen-library-folder-icon:has(> svg) svg[state="open"] .back {
     transform: skewX(16deg) translate(-4px, 2px) scale(0.85);
 }
 
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) svg[state="open"] :is(.front, .dots, .icon) {
+.zen-library-folder-icon:has(> svg) svg[state="open"] :is(.front, .dots, .icon) {
     transform: skewX(-16deg) translate(8px, 2px) scale(0.85);
 }
 
 /* Position the special-folder icon image on the folder's front face,
    matching zen-folders.css which does the same at translate(8.5px, 10.5px). */
-.bookmark-folder-row .bookmark-row-icon.folder:has(> svg) image {
+.zen-library-folder-icon:has(> svg) image {
     -moz-context-properties: fill, fill-opacity;
     fill: color-mix(in srgb, var(--zen-folder-stroke) 50%, currentColor);
     fill-opacity: 0.9;
     transform: translate(8.5px, 10.5px);
+}
+
+.zen-library-folder-row {
+    cursor: default;
+}
+
+.zen-library-folder-row .zen-library-row-title {
+    font-weight: 600;
+}
+
+.zen-library-folder-children {
+    display: grid;
+    grid-template-rows: 0fr;
+    margin-inline-start: var(--zen-library-folder-indent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .zen-library-folder-children {
+        transition: grid-template-rows 0.2s ease;
+    }
+}
+
+.zen-library-folder[open] > .zen-library-folder-children {
+    grid-template-rows: 1fr;
+}
+
+.zen-library-folder-items {
+    min-height: 0;
+    overflow: hidden;
 }
 
 /* Keyword-first search hits render above the tree. */
@@ -129,26 +176,6 @@
     font-size: 12px;
     font-weight: 700;
     opacity: 0.6;
-}
-
-.bookmark-row-icon.page {
-    mask-image: url("chrome://browser/skin/zen-icons/globe.svg");
-}
-
-.bookmark-row-text {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1 1 auto;
-}
-
-.bookmark-row-title-line,
-.bookmark-row-title,
-.bookmark-row-subtitle {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 .bookmark-row-title-line {
@@ -160,37 +187,15 @@
     min-height: 22px;
 }
 
-.bookmark-row-title {
-    font-size: 13px;
-    font-weight: 600;
+.bookmark-row-title-line .zen-library-row-title {
     flex: 1 1 auto;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.bookmark-row-subtitle {
-    font-size: 11px;
-    opacity: 0.62;
-}
-
-.bookmark-row-actions {
-    display: none;
-    align-items: center;
-    gap: 4px;
-    flex: 0 0 auto;
-}
-
-.bookmark-row:hover .bookmark-row-actions,
-.bookmark-row:focus-within .bookmark-row-actions {
-    display: flex;
 }
 
 /* Hovering a bookmark hides its tags so the title extends the full width.
    (Ellipsis remains only as a backstop for titles longer than the row.)
    Keyboard focus keeps tags visible so the pills stay tab-reachable. */
-.bookmark-row:hover:not(:focus-within) .bookmark-tags {
+zen-library-bookmarks-section .zen-library-row:hover:not(:focus-within) .bookmark-tags {
     display: none;
 }
 
@@ -221,36 +226,24 @@
     background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
-.bookmark-separator-row {
-    height: 12px;
-    padding-inline-start: calc(10px + var(--bookmark-depth, 0) * 14px);
-    padding-inline-end: 10px;
+/* A separator is a row of its own, so it gets the hover and right click
+   target of the rest. The line is a border, which is always one device pixel
+   thick. */
+.zen-library-separator {
     display: flex;
     align-items: center;
-    opacity: 0.72;
+    box-sizing: border-box;
+    min-height: 0;
+    height: 10px;
+    margin-block: 0;
+    padding-block: 0;
 }
 
-.bookmark-separator-line {
-    width: 100%;
-    height: 1px;
-    background: color-mix(in srgb, currentColor 18%, transparent);
-}
-
-.bookmark-folder-row::after {
+.zen-library-separator::after {
     content: "";
-    width: 14px;
-    height: 14px;
-    margin-inline-start: auto;
-    flex-shrink: 0;
-    background-color: currentColor;
-    opacity: 0.48;
-    mask: url("chrome://browser/skin/zen-icons/arrow-right.svg") center / contain no-repeat;
-    transition: transform 150ms var(--zen-library-easing, ease), opacity 120ms ease;
-}
-
-.bookmark-folder-row[open]::after {
-    transform: rotate(90deg);
-    opacity: 0.7;
+    flex: 1;
+    height: 0;
+    border-block-start: 1px solid color-mix(in srgb, currentColor 15%, transparent);
 }
 
 .empty-icon.bookmarks-icon {

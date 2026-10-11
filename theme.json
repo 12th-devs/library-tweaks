@@ -64,6 +64,12 @@
       "include": ["chrome://browser/content/browser.xhtml"],
       "loadOrder": 28
     },
+    "features/tweak-routing-section.uc.js": {
+      "name": "Library Tweaks - Space Routing section",
+      "description": "Space routing rules as a native Library section.",
+      "include": ["chrome://browser/content/browser.xhtml"],
+      "loadOrder": 30
+    },
     "features/tweak-cks-section.uc.js": {
       "name": "Library Tweaks - Keyboard Shortcuts section",
       "description": "Groups Library shortcuts under one header in Keyboard Shortcuts settings.",

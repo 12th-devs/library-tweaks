@@ -1618,9 +1618,9 @@
                 const hits = this._keywordHits || [];
                 if (hits.length) {
                     list.appendChild(this.el("div", { className: "bookmarks-keyword-header", textContent: "Top matches" }));
-                    for (const hit of hits) this._renderNode(hit, list, 0);
+                    for (const hit of hits) this._renderNode(hit, list);
                 }
-                for (const root of roots) this._renderNode(root, list, 0);
+                for (const root of roots) this._renderNode(root, list);
                 if (!list.childElementCount) {
                     this._container.replaceChildren(this.el("div", { className: "empty-state" }, [
                         this.el("div", { className: "empty-icon bookmarks-icon" }),
@@ -1943,14 +1943,17 @@
             return null;
         }
 
-        _renderNode(node, parent, depth) {
+        // Row markup mirrors upstream ZenLibraryTweaks (native .zen-library-row
+        // structure, folder wrappers with animated children, line separators).
+        // Data flow, menus, drag logic, toasts and tag pills stay ours.
+        _renderNode(node, parent) {
             if (node.isSeparator) {
                 const row = this.el("div", {
-                    className: "bookmark-separator-row",
-                    style: `--bookmark-depth: ${Math.min(depth, 12)};`
-                }, [this.el("div", { className: "bookmark-separator-line" })]);
+                    className: "zen-library-row zen-library-separator",
+                    title: "",
+                });
+                row.setAttribute("role", "separator");
                 row.dataset.guid = node.guid;
-                row.dataset.depth = String(depth);
                 row.oncontextmenu = (event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1959,34 +1962,96 @@
                 parent.appendChild(row);
                 return;
             }
-            const icon = node.isFolder
-                ? this.el("div", { className: "bookmark-row-icon folder" })
-                : this.el("img", {
-                    className: "bookmark-row-favicon",
-                    src: node.icon || "chrome://browser/skin/zen-icons/globe.svg",
-                    alt: "",
-                    onerror: (event) => {
-                        event.currentTarget.removeAttribute("src");
-                        event.currentTarget.className = "bookmark-row-icon page";
+            if (node.isFolder) {
+                // Folders start closed; only folders the user left open
+                // (restored from the shared sidebar store) or matches for the
+                // live search render expanded. Children always render — the
+                // container's grid animation shows and hides them.
+                const open = this._openFolders.has(node.guid) || !!this._searchTerm;
+                const folderEl = this.el("div", { className: "zen-library-folder" });
+                if (open) folderEl.setAttribute("open", "");
+                const row = this.el("div", {
+                    className: "zen-library-row zen-library-folder-row",
+                    tabindex: 0,
+                    title: node.title,
+                    onclick: (event) => this._onRowClick(event, node)
+                }, [
+                    this.el("span", { className: "zen-library-folder-icon" }),
+                    this.el("div", { className: "zen-library-row-text" }, [
+                        this.el("div", { className: "zen-library-row-title", textContent: node.title || "Untitled" })
+                    ])
+                ]);
+                row.setAttribute("role", "button");
+                row.setAttribute("aria-expanded", open ? "true" : "false");
+                if (open) row.setAttribute("open", "");
+                row.dataset.guid = node.guid;
+                row.draggable = true;
+                row.addEventListener("keydown", (event) => {
+                    if ((event.key === "Enter" || event.key === " ") && event.target === row) {
+                        event.preventDefault();
+                        this._toggleFolder(row, node);
                     }
                 });
+                row.addEventListener("dragstart", (event) => this._onDragStart(event, node));
+                row.addEventListener("dragend", () => this._clearDragState());
+                row.addEventListener("dragover", (event) => this._onDragOver(event, row, node));
+                row.addEventListener("dragleave", (event) => this._onDragLeave(event, row));
+                row.addEventListener("drop", (event) => this._onDrop(event, row, node));
+                row.oncontextmenu = (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this._openContextMenu(event, node);
+                };
+                const kids = this.el("div", { className: "zen-library-folder-children" }, [
+                    this.el("div", { className: "zen-library-folder-items" })
+                ]);
+                if (!open) kids.setAttribute("inert", "");
+                const items = kids.firstElementChild;
+                for (const child of node.children || []) this._renderNode(child, items);
+                folderEl.append(row, kids);
+                parent.appendChild(folderEl);
+                return;
+            }
             const row = this.el("div", {
-                className: `library-list-item bookmark-row ${node.isFolder ? "bookmark-folder-row" : "bookmark-item-row"}`,
+                className: "zen-library-row",
                 tabindex: 0,
-                style: `--bookmark-depth: ${Math.min(depth, 12)};`,
                 title: node.url || node.title,
                 onclick: (event) => this._onRowClick(event, node)
             }, [
-                icon,
-                this.el("div", { className: "bookmark-row-text" }, [
+                this.el("img", {
+                    className: "zen-library-row-icon",
+                    src: node.icon || `page-icon:${node.url}`,
+                    alt: "",
+                    onerror: (event) => {
+                        event.currentTarget.removeAttribute("src");
+                        event.currentTarget.className = "zen-library-row-icon page";
+                    }
+                }),
+                this.el("div", { className: "zen-library-row-text" }, [
                     this._renderTitleLine(node),
-                    this.el("div", { className: "bookmark-row-subtitle", textContent: node.isFolder ? `${node.children.length} items` : node.url })
+                    this.el("div", { className: "zen-library-row-subtitle", textContent: this._formatRowUrl(node.url) })
                 ]),
                 this._renderRowActions(node)
             ]);
+            row.setAttribute("role", "link");
             row.dataset.guid = node.guid;
-            row.dataset.depth = String(depth);
             row.draggable = true;
+            row.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" && event.target === row) {
+                    event.preventDefault();
+                    this._onRowClick(event, node);
+                }
+            });
+            row.addEventListener("mousedown", (event) => {
+                // Stops middle click from starting autoscroll.
+                if (event.button === 1) event.preventDefault();
+            });
+            row.addEventListener("auxclick", (event) => {
+                if (event.button !== 1 || event.defaultPrevented) return;
+                event.preventDefault();
+                if (this._openBookmarkUrl(node.url, true)) return;
+                this._onRowClick(event, node);
+            });
             row.addEventListener("dragstart", (event) => this._onDragStart(event, node));
             row.addEventListener("dragend", () => this._clearDragState());
             row.addEventListener("dragover", (event) => this._onDragOver(event, row, node));
@@ -1998,19 +2063,10 @@
                 this._openContextMenu(event, node);
             };
             parent.appendChild(row);
-
-            if (!node.isFolder) return;
-            // Folders start closed; only folders the user left open (restored
-            // from the shared sidebar store) or matches for the live search
-            // render expanded.
-            const open = this._openFolders.has(node.guid) || !!this._searchTerm;
-            row.toggleAttribute("open", open);
-            if (!open) return;
-            for (const child of node.children) this._renderNode(child, parent, depth + 1);
         }
 
         _renderTitleLine(node) {
-            const children = [this.el("div", { className: "bookmark-row-title", textContent: node.title || node.url || "Untitled" })];
+            const children = [this.el("div", { className: "zen-library-row-title", textContent: node.title || node.url || "Untitled" })];
             if (!node.isFolder && (node.tags || []).length) {
                 const openTags = (event) => {
                     event.preventDefault();
@@ -2030,18 +2086,26 @@
 
         _renderRowActions(node) {
             if (node.isFolder) return null;
-            return this.el("div", { className: "bookmark-row-actions" }, [
-                this.el("button", {
-                    className: "bookmark-more-button download-row-action download-row-more",
-                    title: "More actions",
-                    "aria-label": "More actions",
-                    onclick: (event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        this._openContextMenu(event, node);
-                    }
-                }, [this.el("span", { className: "download-row-action-icon more-icon", "aria-hidden": "true" })])
-            ]);
+            const button = document.createElement("toolbarbutton");
+            button.className = "toolbarbutton-1";
+            button.setAttribute("data-l10n-id", "library-downloads-more-button");
+            const img = document.createElement("img");
+            img.className = "toolbarbutton-icon";
+            img.setAttribute("src", "chrome://global/skin/icons/more.svg");
+            img.setAttribute("alt", "");
+            button.appendChild(img);
+            button.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                this._openContextMenu(event, node);
+            });
+            button.addEventListener("auxclick", (event) => event.stopPropagation());
+            return this.el("div", { className: "zen-library-row-actions" }, [button]);
+        }
+
+        // Subtitle shape matches upstream: scheme, www and trailing slash go.
+        _formatRowUrl(url) {
+            return String(url || "").replace(/^https?:\/\/(www\.)?/i, "").replace(/\/$/, "");
         }
 
         _onRowClick(event, node) {
@@ -2055,19 +2119,20 @@
             try { window.gZenLibrary?.close?.(); } catch (e) { }
         }
 
-        _openBookmarkUrl(url) {
+        _openBookmarkUrl(url, background = false) {
             if (!this._isSafeBookmarkUrl(url)) return false;
             try {
                 if (typeof window.openWebLinkIn === "function") {
-                    window.openWebLinkIn(url, "tab", { inBackground: false });
+                    window.openWebLinkIn(url, "tab", { inBackground: background });
                     return true;
                 }
                 if (typeof window.openTrustedLinkIn === "function") {
-                    window.openTrustedLinkIn(url, "tab", { inBackground: false });
+                    window.openTrustedLinkIn(url, "tab", { inBackground: background });
                     return true;
                 }
                 if (window.gBrowser?.addTrustedTab) {
-                    window.gBrowser.selectedTab = window.gBrowser.addTrustedTab(url, { inBackground: false });
+                    const tab = window.gBrowser.addTrustedTab(url, { inBackground: background });
+                    if (!background) window.gBrowser.selectedTab = tab;
                     return true;
                 }
             } catch (e) {
@@ -2085,38 +2150,20 @@
             }
         }
 
+        // Children always render inside the animated container; toggling only
+        // flips attributes in place, so opening never rebuilds the list.
         _toggleFolder(row, node) {
-            if (!row || !node?.isFolder || this._searchTerm) {
-                if (this._openFolders.has(node.guid)) {
-                    this._openFolders.delete(node.guid);
-                    this._setFolderOpenStored(node.guid, false);
-                } else {
-                    this._openFolders.add(node.guid);
-                    this._setFolderOpenStored(node.guid, true);
-                }
-                this.renderList();
-                return;
-            }
-            const depth = Number(row.dataset.depth || 0);
-            if (row.hasAttribute("open")) {
-                this._openFolders.delete(node.guid);
-                this._setFolderOpenStored(node.guid, false);
-                row.removeAttribute("open");
-                let next = row.nextElementSibling;
-                while (next && Number(next.dataset.depth || 0) > depth) {
-                    const remove = next;
-                    next = next.nextElementSibling;
-                    remove.remove();
-                }
-                this._syncFolderIcons();
-                return;
-            }
-            this._openFolders.add(node.guid);
-            this._setFolderOpenStored(node.guid, true);
-            row.setAttribute("open", "");
-            const frag = document.createDocumentFragment();
-            for (const child of node.children || []) this._renderNode(child, frag, depth + 1);
-            row.after(...Array.from(frag.childNodes));
+            if (!row || !node?.isFolder) return;
+            const open = !this._openFolders.has(node.guid);
+            if (open) this._openFolders.add(node.guid);
+            else this._openFolders.delete(node.guid);
+            this._setFolderOpenStored(node.guid, open);
+            try {
+                const folderEl = row.closest(".zen-library-folder");
+                if (folderEl) folderEl.toggleAttribute("open", open);
+                row.toggleAttribute("open", open);
+                row.setAttribute("aria-expanded", open ? "true" : "false");
+            } catch (e) { }
             this._syncFolderIcons();
         }
 
@@ -2138,17 +2185,14 @@
                 special[PlacesUtils.bookmarks.menuGuid] = "chrome://browser/skin/zen-icons/selectable/inbox.svg";
                 special[PlacesUtils.bookmarks.unfiledGuid] = "chrome://browser/skin/zen-icons/selectable/bookmark.svg";
             } catch (e) { }
-            for (const icon of this._container.querySelectorAll(".bookmark-folder-row .bookmark-row-icon.folder")) {
+            for (const icon of this._container.querySelectorAll(".zen-library-folder-row .zen-library-folder-icon")) {
                 try {
                     let svg = icon.firstElementChild;
                     if (!svg || svg.localName !== "svg") {
                         svg = rawIcon.cloneNode(true);
                         icon.replaceChildren(svg);
-                        try { icon.style.maskImage = "none"; } catch (e) { }
-                        try { icon.style.background = "none"; } catch (e) { }
-                        try { icon.style.opacity = "1"; } catch (e) { }
                     }
-                    const row = icon.closest(".bookmark-folder-row");
+                    const row = icon.closest(".zen-library-folder-row");
                     svg.setAttribute("state", row?.hasAttribute("open") ? "open" : "close");
                     const svgImage = svg.querySelector?.(".icon image");
                     if (svgImage) {
@@ -2293,7 +2337,7 @@
         // root folder.
         _openBlankSpaceMenu(event) {
             try {
-                if (event.target?.closest?.(".bookmark-row, .bookmark-separator-row")) return;
+                if (event.target?.closest?.(".zen-library-row, .zen-library-separator")) return;
             } catch (e) { }
             event.preventDefault();
             document.getElementById("zen-bookmarks-blank-menu")?.remove();
@@ -3147,6 +3191,12 @@
             try {
                 if (typeof this._isHistorySectionEnabled === "function" && this._isHistorySectionEnabled()) return true;
             } catch (e) { }
+            try {
+                if (typeof this._isHistorySectionEnabled === "function" && this._isHistorySectionEnabled()) return true;
+            } catch (e) { }
+            try {
+                if (typeof this._isRoutingEnabled === "function" && this._isRoutingEnabled()) return true;
+            } catch (e) { }
             return false;
         }
 
@@ -3209,6 +3259,7 @@
         _unregisterAllSections() {
             this._unregisterSavesSections();
             try { this._historySectionUnregister?.(); } catch (e) { }
+            try { this._routingUnregister?.(); } catch (e) { }
         }
 
         _unregisterSavesSections() {
@@ -3258,6 +3309,7 @@
             }
             this._registerNativeWhenReady();
             try { this._historySectionInit?.(); } catch (e) { }
+            try { this._routingInit?.(); } catch (e) { }
         }
 
         // Fallback registration for the NL urlbar provider: Sine imports
@@ -3515,6 +3567,7 @@
         _registerNativeSections(host) {
             try { this._registerNativeSectionObject(host); } catch (e) { }
             try { this._historySectionRegister?.(host); } catch (e) { }
+            try { this._routingSectionRegister?.(host); } catch (e) { }
             try { if (this._applySidebarOrder(host)) host.requestUpdate?.(); } catch (e) { }
         }
 
@@ -3743,26 +3796,10 @@
             return false;
         }
 
-        // Old-mod Saves glyph: the sprite box is hidden and the folder+ribbon SVG
-        // (same markup as the custom library sidebar) is injected in its place.
-        // Bounce/ribbon keyframes are carried over from the custom mod's core.css;
-        // native marks the selected tab with [active] instead of .active.
-        _nativeBookmarksTabIcon() {
-            try {
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(this._bookmarksIconSvg(), "image/svg+xml");
-                const node = doc.documentElement;
-                if (!node || node.localName !== "svg") return null;
-                node.removeAttribute("xmlns");
-                return node;
-            } catch (e) {
-                return null;
-            }
-        }
-
-        // Native tabs use a 36-frame sprite; Saves ships a static glyph, and its
-        // Fluent id does not exist upstream, so fix the rendered tab in place.
-        // Lit skips rewriting unchanged bindings, so removing data-l10n-id sticks.
+        // Saves tab icon: the upstream animated sprite (ported improvement).
+        // Only the label needs patching — its Fluent id does not exist
+        // upstream. Lit skips rewriting unchanged bindings, so removing
+        // data-l10n-id sticks.
         _patchNativeSidebarLabel(host) {
             try {
                 const root = this._nativeRoot(host);
@@ -3778,12 +3815,6 @@
                 if (label.hasAttribute("data-l10n-id")) {
                     label.removeAttribute("data-l10n-id");
                     touched = true;
-                }
-                // Same folder+ribbon glyph the custom library sidebar used.
-                const iconBox = tab.querySelector?.(".zen-library-tab-icon");
-                if (iconBox && !iconBox.querySelector(".zen-bookmarks-icon")) {
-                    const icon = this._nativeBookmarksTabIcon();
-                    if (icon) iconBox.replaceChildren(icon);
                 }
                 return touched;
             } catch (e) {
@@ -3882,81 +3913,10 @@
 .zen-library-tab[dragging-tab] {
   opacity: 0.5;
 }
-/* Saves glyph: injected SVG replaces the sprite box, using the native
-   sprite color tokens (zen-library.css): accent stroke, stroke-mixed fill,
-   transparent fill when idle. Inline SVG can't use context-fill, so paint
-   the shapes directly with those tokens. */
+/* Saves tab icon: upstream animated sprite (ported improvement). Native
+   sprite animation and theming apply untouched. */
 .zen-library-tab[data-section="bookmarks"] .zen-library-tab-icon-image {
-  display: none;
-}
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon {
-  width: 28px;
-  height: 28px;
-  display: block;
-  --stroke: var(--zen-accent-button-color);
-  --fill: color-mix(in srgb, var(--stroke), light-dark(white, black) 60%);
-}
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon :is(.zen-bookmarks-bg) {
-  fill: var(--fill);
-}
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon :is(.zen-bookmarks-gradient) {
-  fill: var(--fill);
-  mix-blend-mode: overlay;
-  opacity: 0.1;
-}
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon :is(.zen-bookmarks-border) {
-  fill: none;
-  stroke: var(--stroke);
-}
-.zen-library-tab[data-section="bookmarks"] .zen-bookmarks-icon .zen-bookmarks-ribbon path {
-  fill: var(--stroke);
-}
-.zen-library-tab[data-section="bookmarks"]:not([active]) .zen-bookmarks-icon :is(.zen-bookmarks-bg, .zen-bookmarks-gradient) {
-  fill: transparent;
-}
-@media (prefers-reduced-motion: no-preference) {
-  :is(.zen-library-tab[data-section="bookmarks"][active],
-      .zen-library-tab[data-section="bookmarks"][animate]) .zen-bookmarks-bounce {
-    animation: zenBookmarksBounce 0.583s forwards;
-  }
-  :is(.zen-library-tab[data-section="bookmarks"][active],
-      .zen-library-tab[data-section="bookmarks"][animate]) .zen-bookmarks-ribbon {
-    animation: zenBookmarksRibbon 0.583s forwards;
-  }
-}
-@keyframes zenBookmarksBounce {
-  0% {
-    transform: translateY(0px) rotate(0deg);
-    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
-  }
-  25% {
-    transform: translateY(2px) rotate(0deg);
-    animation-timing-function: cubic-bezier(0.4, 0, 0.64, 1);
-  }
-  55% {
-    transform: translateY(-9px) rotate(-5deg);
-    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
-  }
-  85%, 100% {
-    transform: translateY(0px) rotate(0deg);
-  }
-}
-@keyframes zenBookmarksRibbon {
-  0% {
-    transform: translateY(-14px);
-    animation-timing-function: cubic-bezier(0.33, 0, 0.67, 1);
-  }
-  35% {
-    transform: translateY(3px);
-    animation-timing-function: cubic-bezier(0.4, 0, 0.64, 1);
-  }
-  60% {
-    transform: translateY(-3px);
-    animation-timing-function: cubic-bezier(0.25, 0, 0.75, 1);
-  }
-  85%, 100% {
-    transform: translateY(0px);
-  }
+  background-image: url("chrome://sine/content/library-tweaks/icons/library-bookmarks-sprite.svg");
 }
 /* The module renders .library-list-container (a custom-mod class). Behave like
    native's .zen-library-search-results scroll viewport, including the filter
@@ -3994,64 +3954,9 @@ zen-library-bookmarks-section .zen-library-filter-panel-inner {
   scrollbar-width: thin;
   -moz-window-dragging: no-drag;
 }
-/* Row parity with the custom library: rows are .library-list-item.bookmark-row,
-   and the more button borrows .download-row-action from the downloads section.
-   None of those stylesheets load under native, so the row base, the more
-   button and the empty states are ported here, scoped to our section so native
-   sections are untouched. */
-zen-library-bookmarks-section .library-list-container .library-list-item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 0 12px;
-  height: 48px;
-  border-radius: 16px;
-  cursor: pointer;
-  transition: all 0.2s;
-  position: relative;
-  user-select: none;
-  flex-shrink: 0;
-  opacity: 0.9;
-  box-sizing: border-box;
-  -moz-window-dragging: no-drag;
-}
-zen-library-bookmarks-section .library-list-container .library-list-item:hover {
-  background: color-mix(in srgb, currentColor 10%, transparent);
-}
-zen-library-bookmarks-section .library-list-container .library-list-item:active {
-  transform: scale(0.98);
-}
-zen-library-bookmarks-section .bookmark-row-actions .download-row-action {
-  appearance: none;
-  border: 0;
-  display: flex;
-  width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  opacity: 0.72;
-}
-zen-library-bookmarks-section .bookmark-row-actions .download-row-action:hover {
-  opacity: 1;
-  background: color-mix(in srgb, currentColor 12%, transparent);
-}
-zen-library-bookmarks-section .bookmark-row-actions .download-row-action-icon {
-  display: block;
-  width: 14px;
-  height: 14px;
-  background-color: currentColor;
-  mask-position: center;
-  mask-repeat: no-repeat;
-  mask-size: contain;
-}
-zen-library-bookmarks-section .bookmark-row-actions .download-row-action-icon.more-icon {
-  mask-image: url("chrome://browser/skin/zen-icons/menu.svg");
-}
+/* Row base, hover and the more button come from the native library
+   stylesheets now that rows use native classes; only section-specific
+   pieces (empty states, tags, drop indicators) are defined here. */
 zen-library-bookmarks-section .empty-state {
   display: flex;
   flex-direction: column;
@@ -4477,6 +4382,7 @@ zen-library-bookmarks-section .empty-state .empty-icon {
             this._shutdown();
             this._unwatchMasterPref();
             try { this._unwatchHistorySectionPref?.(); } catch (e) { }
+            try { this._unwatchRoutingPref?.(); } catch (e) { }
         }
 
         // Full teardown minus the master pref watcher, so the toggle-off path
@@ -4518,7 +4424,8 @@ zen-library-bookmarks-section .empty-state .empty-icon {
         window.gZenLibraryBookmarksIntegration.destroy();
     }
     window.gZenLibraryBookmarksIntegration = new ZenLibraryBookmarksIntegration();
-    // Picks the feature half back up when it loaded earlier (normal boot)
+    // Picks the feature halves back up when they loaded earlier (normal boot)
     // without depending on script load order.
     try { window._libraryTweaksAttachHistorySection?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
+    try { window._libraryTweaksAttachRouting?.(window.gZenLibraryBookmarksIntegration); } catch (e) { }
 })();
