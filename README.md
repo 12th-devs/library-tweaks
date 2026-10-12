@@ -84,7 +84,8 @@ needed — and turning it back on re-registers everything the same way.
 - Adds a **Routing** tab after Spaces listing Zen's space-routing rules
   (link pattern → space, contains/exact/regex) with search, create, edit and
   remove, plus the default route for links from other apps. Skipped in
-  private windows. Ported from JustAdumbPrsn/ZenLibraryTweaks (`main`).
+  private windows. Space icons resolve like the native Spaces tab, so custom
+  icon mods (e.g. Tabler bundles) render. Ported from JustAdumbPrsn/ZenLibraryTweaks (`main`).
 
 ## Boosts — `zen.library.tweaks.boosts.ui`
 

@@ -340,10 +340,30 @@
             }
         }
 
+        // Resolves a space icon like the native spaces section does, so custom
+        // icon mods work: the manager result first (emoji fallback included),
+        // then the raw field. Files (native chrome:// art and resource://
+        // Tabler bundles alike) render as images, everything else as text.
+        #resolveSpaceIcon(id) {
+            try {
+                const ws = this.#spaces.find(space => space.uuid === id);
+                if (!ws) return "";
+                try {
+                    if (window.gZenWorkspaces?.getWorkspaceIcon) {
+                        const resolved = window.gZenWorkspaces.getWorkspaceIcon(ws);
+                        if (resolved) return resolved;
+                    }
+                } catch (e) { }
+                return ws.icon || "";
+            } catch (e) {
+                return "";
+            }
+        }
+
         #renderSpaceIcon(id) {
-            const icon = this.#spaces.find(space => space.uuid === id)?.icon;
+            const icon = this.#resolveSpaceIcon(id);
             if (!icon) return nothing;
-            return icon.startsWith("chrome://")
+            return icon.endsWith(".svg")
                 ? html`<img class="zen-library-route-space-icon" src=${icon} alt="" />`
                 : html`<span class="zen-library-route-space-icon">${icon}</span>`;
         }
@@ -393,12 +413,13 @@
         #createSpaceItem(id, name, icon) {
             const item = document.createXULElement("menuitem");
             item.setAttribute("value", id);
-            if (icon?.startsWith("chrome://")) {
+            const resolved = this.#resolveSpaceIcon(id) || icon || "";
+            if (resolved?.endsWith(".svg")) {
                 item.className = "menuitem-iconic";
-                item.setAttribute("image", icon);
+                item.setAttribute("image", resolved);
                 item.setAttribute("label", name);
             } else {
-                item.setAttribute("label", icon ? `${icon} ${name}` : name);
+                item.setAttribute("label", resolved ? `${resolved} ${name}` : name);
             }
             return item;
         }
@@ -621,6 +642,11 @@
         _ensureRoutingStyles(root) {
             if (!root?.querySelector) return;
             const css = `/* Space Routing section (ported improvement). */
+/* Tab icon: upstream animated sprite. Native sprite animation and theming
+   apply untouched. */
+.zen-library-tab[data-section="space-routing"] .zen-library-tab-icon-image {
+  background-image: url("chrome://sine/content/library-tweaks/icons/library-space-routing-sprite.svg");
+}
 zen-library-space-routing-section {
   --zen-library-route-danger: light-dark(#9d2222, #d03535);
 }
